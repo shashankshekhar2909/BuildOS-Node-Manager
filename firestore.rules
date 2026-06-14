@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global Safety Net (default-deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isRegistered() {
+      return isSignedIn() && (
+        request.auth.token.email == 'sunnyrocks1122@gmail.com' ||
+        exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email))
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'sunnyrocks1122@gmail.com' ||
+        (exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email)) &&
+         get(/databases/$(database)/documents/authorizedUsers/$(request.auth.token.email)).data.role == 'admin')
+      );
+    }
+
+    // 2. Authorized Users whitelist
+    match /authorizedUsers/{email} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 3. Central Fleet shareable nodes
+    match /users/central_fleet {
+      allow read: if isRegistered();
+      allow write: if isAdmin();
+
+      match /hosts/{hostId} {
+        allow read: if isRegistered();
+        allow write: if isAdmin();
+      }
+
+      match /logs/{logId} {
+        allow read: if isRegistered();
+        allow write: if isRegistered();
+      }
+    }
+
+    // 4. Private collections (Chats)
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId && isRegistered();
+
+      match /chats/{chatId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId && isRegistered();
+      }
+    }
+  }
+}

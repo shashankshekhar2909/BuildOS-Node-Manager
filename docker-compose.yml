@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  hermes-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes_dashboard_node
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - ./data:/app/data
+    restart: always

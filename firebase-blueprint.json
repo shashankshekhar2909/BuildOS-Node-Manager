@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "AuthorizedUser": {
+      "title": "AuthorizedUser",
+      "description": "Information about registered users and their permission tiers",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "viewer"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "role"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "HostMachine": {
+      "title": "HostMachine",
+      "description": "Registered SSH host node configuration",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "ip": { "type": "string" },
+        "port": { "type": "integer" },
+        "username": { "type": "string" },
+        "authType": { "type": "string", "enum": ["password", "privateKey", "none"] },
+        "password": { "type": "string" },
+        "privateKey": { "type": "string" },
+        "isSimulated": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "ip", "port", "username", "authType", "isSimulated"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Chat log message for the AI chatbot",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "sender": { "type": "string", "enum": ["user", "agent", "system"] },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "isVoice": { "type": "boolean" },
+        "actions": { "type": "array" }
+      },
+      "required": ["userId", "sender", "text", "timestamp"]
+    },
+    "TerminalLog": {
+      "title": "TerminalLog",
+      "description": "Audit security terminal log",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "hostId": { "type": "string" },
+        "hostName": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "command": { "type": "string" },
+        "output": { "type": "string" },
+        "isError": { "type": "boolean" }
+      },
+      "required": ["userId", "hostId", "hostName", "timestamp", "command", "output", "isError"]
+    }
+  },
+  "firestore": {
+    "/authorizedUsers/{email}": {
+      "schema": "AuthorizedUser",
+      "description": "Authorized Gmail users white-list"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/users/{userId}/hosts/{hostId}": {
+      "schema": "HostMachine",
+      "description": "User server hosts"
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "ChatMessage",
+      "description": "AI chatbot message logs"
+    },
+    "/users/{userId}/logs/{logId}": {
+      "schema": "TerminalLog",
+      "description": "Diagnostic commands terminal log history"
+    }
+  }
+}
