@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Mic, MicOff, Volume2, VolumeX, Send, Bot, User, Cpu, AlertCircle, 
-  ChevronDown, ChevronUp, Sparkles, Zap, Trash2, Phone, PhoneOff, Radio
+  ChevronDown, ChevronUp, Sparkles, Zap, Trash2, Phone, PhoneOff, Radio,
+  MessageSquare, Plus
 } from 'lucide-react';
-import { ChatMessage, AgentAction, HostMachine } from '../types';
+import { ChatMessage, AgentAction, HostMachine, ChatSession } from '../types';
 import { pcmToBase64, playAudioChunk, stopAllPlayerAudio } from '../lib/audio_helper';
 import { addFirestoreChat } from '../lib/firestore_sync';
 
@@ -16,6 +17,11 @@ interface VoiceAgentProps {
   onAddMessage: (msg: Omit<ChatMessage, 'id'>) => Promise<void>;
   onClearMessages: () => void;
   currentUserRole?: 'admin' | 'viewer' | null;
+  chatSessions?: ChatSession[];
+  activeChatSessionId?: string | null;
+  onSelectSession?: (id: string) => void;
+  onNewSession?: () => void;
+  onDeleteSession?: (id: string) => void;
 }
 
 export default function VoiceAgent({ 
@@ -26,7 +32,12 @@ export default function VoiceAgent({
   messages, 
   onAddMessage,
   onClearMessages,
-  currentUserRole
+  currentUserRole,
+  chatSessions = [],
+  activeChatSessionId = null,
+  onSelectSession = () => {},
+  onNewSession = () => {},
+  onDeleteSession = () => {}
 }: VoiceAgentProps) {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -374,11 +385,28 @@ export default function VoiceAgent({
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Server rejected query processing.');
+        const errText = await response.text();
+        let errMsg = 'Server rejected query processing.';
+        try {
+          const errData = JSON.parse(errText);
+          errMsg = errData.error || errMsg;
+        } catch {
+          if (errText.includes('<!DOCTYPE') || errText.includes('<!doctype')) {
+            errMsg = `Server Error (${response.status}): The server encountered a system error or returned an HTML error page.`;
+          } else {
+            errMsg = errText || errMsg;
+          }
+        }
+        throw new Error(errMsg);
       }
 
-      const data = await response.json();
+      const rawText = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseError) {
+        throw new Error(`Invalid JSON response from server: ${rawText.substring(0, 150)}...`);
+      }
 
       const agentMessage: Omit<ChatMessage, 'id'> = {
         sender: 'agent',
@@ -414,7 +442,72 @@ export default function VoiceAgent({
   };
 
   return (
-    <div id="agent-portal-box" className="border border-[#393939] bg-[#262626] rounded-none overflow-hidden flex flex-col h-full shadow-lg min-h-[460px]">
+    <div id="agent-portal-layout" className="flex flex-col lg:flex-row gap-6 w-full h-full min-h-[580px] items-stretch">
+      
+      {/* LEFT: Conversation Folder list */}
+      <div id="chat-sessions-sidebar" className="w-full lg:w-64 bg-[#262626] border border-[#393939] flex flex-col shrink-0 font-mono text-xs">
+        <div className="p-3 border-b border-[#393939] bg-[#161616] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-3.5 w-3.5 text-[#78a9ff]" />
+            <span className="font-bold text-[10px] text-slate-300 uppercase tracking-wider">CONVERSATIONS</span>
+          </div>
+          <button
+            onClick={onNewSession}
+            title="Create New Conversation"
+            className="p-1 hover:bg-[#393939] border border-[#393939] rounded-none text-white transition-all cursor-pointer flex items-center justify-center"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin min-h-[160px] max-h-[300px] lg:max-h-none">
+          {chatSessions.map((session) => {
+            const isActive = activeChatSessionId === session.id;
+            return (
+              <div
+                key={session.id}
+                onClick={() => onSelectSession(session.id)}
+                className={`group flex items-center justify-between p-2 cursor-pointer transition-all border ${
+                  isActive
+                    ? 'bg-[#161616] border-[#0f62fe] text-white'
+                    : 'bg-[#1e1e1e]/40 border-transparent text-[#a8a8a8] hover:bg-[#161616] hover:text-white'
+                }`}
+              >
+                <div className="flex items-center gap-2 truncate pr-1">
+                  <MessageSquare className={`h-3 w-3 shrink-0 ${isActive ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span className="text-[10px] uppercase tracking-wide truncate">{session.title}</span>
+                </div>
+                {chatSessions.length > 1 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteSession(session.id);
+                    }}
+                    title="Delete Conversation"
+                    className="opacity-0 group-hover:opacity-100 hover:text-[#ff8389] p-0.5 rounded transition"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-3.5 border-t border-[#393939] bg-[#1a1a1a] flex items-center justify-between gap-2.5">
+          <span className="text-[9px] text-[#8d8d8d] uppercase tracking-wider block">CLOUD_HANDSHAKE</span>
+          <button
+            onClick={onClearMessages}
+            className="text-[9px] font-bold text-[#ff8389] hover:text-white flex items-center gap-1 cursor-pointer transition-all uppercase"
+          >
+            <Trash2 className="h-3 w-3" />
+            <span>RESET CONTEXT</span>
+          </button>
+        </div>
+      </div>
+
+      {/* RIGHT: Actual Voice Chat Workspace */}
+      <div id="agent-portal-box" className="flex-1 border border-[#393939] bg-[#262626] rounded-none overflow-hidden flex flex-col h-full shadow-lg min-h-[460px]">
       
       {/* Header bar */}
       <div className="bg-[#161616] px-4 py-3 border-b border-[#393939] flex flex-wrap items-center justify-between gap-3">
@@ -435,7 +528,7 @@ export default function VoiceAgent({
             )}
           </div>
           <div>
-            <h3 className="font-bold text-white text-xs select-none uppercase tracking-wider font-mono">HERMES NODE_AGENT</h3>
+            <h3 className="font-bold text-white text-xs select-none uppercase tracking-wider font-mono">BUILDOS NODE_AGENT</h3>
             <span className="text-[10px] text-[#a8a8a8] font-mono block">
               {isLiveActive ? (
                 <span className="text-[#42be65] animate-pulse font-bold uppercase tracking-wider">● TELEPHONY CH_OPEN</span>
@@ -653,7 +746,7 @@ export default function VoiceAgent({
                   <span className="h-1.5 w-1.5 rounded-none bg-[#0f62fe] animate-bounce [animation-delay:0.4s]" />
                 </div>
                 <span className="font-bold text-[10px] text-[#78a9ff] uppercase">
-                  {isRecordingTranscription ? 'INIT_STT_AUDIO...' : 'HERMES_SYS_INSPECTING...'}
+                  {isRecordingTranscription ? 'INIT_STT_AUDIO...' : 'BUILDOS_SYS_INSPECTING...'}
                 </span>
               </div>
             </div>
@@ -723,5 +816,6 @@ export default function VoiceAgent({
         </button>
       </form>
     </div>
+  </div>
   );
 }

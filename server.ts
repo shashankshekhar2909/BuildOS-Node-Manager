@@ -8,11 +8,30 @@ import dotenv from "dotenv";
 import http from "http";
 import { WebSocketServer } from "ws";
 import crypto from "crypto";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 dotenv.config();
 
+// Initialize Firebase Web SDK on the server side
+const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+let firestoreDb: any = null;
+
+if (fs.existsSync(firebaseConfigPath)) {
+  try {
+    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
+    const fbApp = initializeApp(firebaseConfig);
+    firestoreDb = getFirestore(fbApp, firebaseConfig.firestoreDatabaseId);
+    console.log("[Firebase Server] Firestore successfully connected to custom database ID:", firebaseConfig.firestoreDatabaseId);
+  } catch (err) {
+    console.error("[Firebase Server] Connection failed:", err);
+  }
+} else {
+  console.warn("[Firebase Server] firebase-applet-config.json not found in server working directory");
+}
+
 // Secure AES-256-CBC Encryption Engine
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || "hermes-node-commander-secure-salting-2026";
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || "buildos-node-commander-secure-salting-2026";
 const KEY = crypto.createHash("sha256").update(ENCRYPTION_SECRET).digest();
 const IV_LENGTH = 16;
 
@@ -207,6 +226,33 @@ const writeConfig = (config: LLMConfig) => {
     encConfig.apiKey = encrypt(encConfig.apiKey);
   }
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(encConfig, null, 2));
+};
+
+const getActiveConfig = async (): Promise<LLMConfig> => {
+  const localConfig = readConfig();
+  if (firestoreDb) {
+    try {
+      const configDocRef = doc(firestoreDb, "systemConfig", "llm");
+      const docSnap = await getDoc(configDocRef);
+      if (docSnap.exists()) {
+        const dbConfig = docSnap.data() as any;
+        const merged: LLMConfig = {
+          ...localConfig,
+          provider: dbConfig.provider || localConfig.provider,
+          modelName: dbConfig.modelName || localConfig.modelName,
+          customEndpoint: dbConfig.customEndpoint !== undefined ? dbConfig.customEndpoint : localConfig.customEndpoint,
+          apiKey: dbConfig.apiKey || localConfig.apiKey
+        };
+        if (merged.apiKey && merged.apiKey.startsWith("ENC:")) {
+          merged.apiKey = decrypt(merged.apiKey);
+        }
+        return merged;
+      }
+    } catch (error) {
+      console.error("[Firebase Server] Failed to fetch config from Firestore, using local/env config:", error);
+    }
+  }
+  return localConfig;
 };
 
 const readLogs = (): TerminalLog[] => {
@@ -701,21 +747,38 @@ app.get("/api/terminal-logs", (req, res) => {
 });
 
 // Config API
-app.get("/api/config", (req, res) => {
-  const config = readConfig();
+app.get("/api/config", async (req, res) => {
+  const config = await getActiveConfig();
   res.json({
     ...config,
     apiKey: config.apiKey ? "••••••••••••" : ""
   });
 });
 
-app.post("/api/config", (req, res) => {
+app.post("/api/config", async (req, res) => {
   const updated = { ...req.body };
-  const current = readConfig();
+  const current = await getActiveConfig();
   if (updated.apiKey === "••••••••••••") {
     updated.apiKey = current.apiKey;
   }
   writeConfig(updated);
+
+  // Sync to Firestore durably
+  if (firestoreDb) {
+    try {
+      const configDocRef = doc(firestoreDb, "systemConfig", "llm");
+      const firestoreData = { ...updated };
+      // Encrypt the apiKey if it's set and not already encrypted
+      if (firestoreData.apiKey && !firestoreData.apiKey.startsWith("ENC:")) {
+        firestoreData.apiKey = encrypt(firestoreData.apiKey);
+      }
+      await setDoc(configDocRef, firestoreData);
+      console.log("[Firebase Server] Custom LLM config successfully mirrored to Firestore.");
+    } catch (err) {
+      console.error("[Firebase Server] Failed core replication of user credentials configuration to Firestore:", err);
+    }
+  }
+
   res.json({
     ...updated,
     apiKey: updated.apiKey ? "••••••••••••" : ""
@@ -764,22 +827,23 @@ app.post("/api/ssh/execute", async (req, res) => {
 
 // Independent LLM Agent Chat Logic (Multi-step reasoning engine)
 app.post("/api/agent/chat", async (req, res) => {
-  const { message, chatHistory = [], activeHostId, hosts: clientHosts, modelMode, currentUserRole } = req.body;
-  const hosts = clientHosts || readHosts();
-  const config = readConfig();
+  try {
+    const { message, chatHistory = [], activeHostId, hosts: clientHosts, modelMode, currentUserRole } = req.body;
+    const hosts = clientHosts || readHosts();
+    const config = await getActiveConfig();
 
-  // Setup contextual instruction
-  const hostMetadata = hosts.map(h => ({
-    id: h.id,
-    name: h.name,
-    ip: h.ip,
-    username: h.username,
-    port: h.port,
-    isSimulated: h.isSimulated,
-    stats: h.isSimulated ? h.simulatedStats : "Requires execution of df/free/uptime/docker commands to fetch real stats"
-  }));
+    // Setup contextual instruction
+    const hostMetadata = hosts.map(h => ({
+      id: h.id,
+      name: h.name,
+      ip: h.ip,
+      username: h.username,
+      port: h.port,
+      isSimulated: h.isSimulated,
+      stats: h.isSimulated ? h.simulatedStats : "Requires execution of df/free/uptime/docker commands to fetch real stats"
+    }));
 
-  const systemInstruction = `You are an AI SSH Hosting Agent. You operate servers for the user.
+    const systemInstruction = `You are an AI SSH Hosting Agent. You operate servers for the user.
 Your interface supports voice (TTS reads your reply text) and standard text. Keep your text friendly, objective, scannable, and helpful.
 
 Available Hosts:
@@ -812,13 +876,12 @@ Format your responses MUST be valid JSON matching EXACTLY one of these two schem
 
 CRITICAL: ONLY respond with the raw JSON object itself in your text response. Do not surround it with markdown codeblocks or other formatting. Under any circumstances, your entire output must be parseable JSON. Always prioritize the activeHostSelected in UI unless the user specifies a different machine name/IP.`;
 
-  const executionActions: any[] = [];
-  let currentPrompt = `User Query: "${message}"\nChat History:\n${JSON.stringify(chatHistory)}`;
-  let loopCount = 0;
-  const maxLoops = 4;
-  let finalAnswer = "I encountered an issue executing agent instructions.";
+    const executionActions: any[] = [];
+    let currentPrompt = `User Query: "${message}"\nChat History:\n${JSON.stringify(chatHistory)}`;
+    let loopCount = 0;
+    const maxLoops = 4;
+    let finalAnswer = "I encountered an issue executing agent instructions.";
 
-  try {
     while (loopCount < maxLoops) {
       loopCount++;
       let rawLLMText = "";
@@ -1026,7 +1089,7 @@ app.post("/api/transcribe", async (req, res) => {
   if (!audio) {
     return res.status(400).json({ error: "Missing audio payload data" });
   }
-  const config = readConfig();
+  const config = await getActiveConfig();
   const apiKey = config.apiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: "No Gemini API Key configured on server" });
@@ -1064,7 +1127,7 @@ app.post("/api/analyze-diagnostics", async (req, res) => {
   if (!host) {
     return res.status(400).json({ error: "No host machine details provided" });
   }
-  const config = readConfig();
+  const config = await getActiveConfig();
   const apiKey = config.apiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: "No Gemini API Key configured on server" });
@@ -1113,7 +1176,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   // Default to Gemini backend loop to solve the request
   const hosts = readHosts();
-  const config = readConfig();
+  const config = await getActiveConfig();
 
   const hostMetadata = hosts.map(h => ({
     id: h.id,
@@ -1170,7 +1233,7 @@ async function startServer() {
   // Handle live agents
   wss.on("connection", async (clientWs) => {
     console.log("[LiveAgent WS] Client voice session initiated");
-    const config = readConfig();
+    const config = await getActiveConfig();
     const apiKey = config.apiKey || process.env.GEMINI_API_KEY;
     if (!apiKey) {
       clientWs.send(JSON.stringify({ error: "No Gemini API key found on the server. Please check config." }));
@@ -1191,7 +1254,7 @@ async function startServer() {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } }
           },
-          systemInstruction: "You are an expert real-time AI system administrator named Hermes. You respond directly, concisely, and with precise remote server commands. Focus on speed and accuracy. Your output is rendered to voice in real-time."
+          systemInstruction: "You are an expert real-time AI system administrator named BuildOS. You respond directly, concisely, and with precise remote server commands. Focus on speed and accuracy. Your output is rendered to voice in real-time."
         },
         callbacks: {
           onmessage: (msg: any) => {

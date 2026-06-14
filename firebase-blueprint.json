@@ -70,6 +70,18 @@
         "isError": { "type": "boolean" }
       },
       "required": ["userId", "hostId", "hostName", "timestamp", "command", "output", "isError"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Global administrator configuration and API parameters",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "modelName": { "type": "string" },
+        "customEndpoint": { "type": "string" }
+      },
+      "required": ["provider", "modelName"]
     }
   },
   "firestore": {
@@ -92,6 +104,10 @@
     "/users/{userId}/logs/{logId}": {
       "schema": "TerminalLog",
       "description": "Diagnostic commands terminal log history"
+    },
+    "/systemConfig/{configId}": {
+      "schema": "SystemConfig",
+      "description": "System-wide settings"
     }
   }
 }

@@ -14,12 +14,15 @@ import {
   Code,
   LogOut,
   Sun,
-  Moon
+  Moon,
+  Users,
+  Menu,
+  X
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from './lib/firebase';
-import { HostMachine, TerminalLog, LLMConfig, ChatMessage } from './types';
+import { HostMachine, TerminalLog, LLMConfig, ChatMessage, ChatSession } from './types';
 import HostCard from './components/HostCard';
 import SSHConsole from './components/SSHConsole';
 import VoiceAgent from './components/VoiceAgent';
@@ -28,6 +31,7 @@ import WhatsAppPreview from './components/WhatsAppPreview';
 import AddHostModal from './components/AddHostModal';
 import UserManagementPanel from './components/UserManagementPanel';
 import NodeMonitor from './components/NodeMonitor';
+import NodeDetailsPage from './components/NodeDetailsPage';
 
 // Firebase operations
 import { auth, loginWithGoogle, logoutUser } from './lib/firebase';
@@ -40,7 +44,12 @@ import {
   deleteFirestoreHost, 
   addFirestoreLog, 
   addFirestoreChat, 
-  clearFirestoreChats 
+  clearFirestoreChats,
+  subscribeChatSessions,
+  addFirestoreChatSession,
+  updateFirestoreChatSessionTitle,
+  deleteFirestoreChatSession,
+  clearFirestoreChatsBySession
 } from './lib/firestore_sync';
 
 export default function App() {
@@ -63,7 +72,8 @@ export default function App() {
   const [terminalLogs, setTerminalLogs] = useState<TerminalLog[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<HostMachine | null>(null);
-  const [activeTab, setActiveTab] = useState<'infrastructure' | 'whatsapp' | 'brain'>('infrastructure');
+  const [activeTab, setActiveTab] = useState<'fleet' | 'node-details' | 'diagnostics' | 'chat' | 'whatsapp' | 'settings' | 'operators'>('fleet');
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   
   // Real-time UTC Clock
   const [utcTime, setUtcTime] = useState('');
@@ -212,7 +222,53 @@ export default function App() {
     };
   }, [currentUser, isGuestMode]);
 
-  // Sync Cloud Firestore Chat logs on Auth Change
+  // Chat Sessions and Active Selection
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
+
+  // Synchronize Cloud Firestore Chat Sessions list
+  useEffect(() => {
+    if (!currentUser) {
+      // Local fallback session
+      const guestSession: ChatSession = {
+        id: 'guest-session-1',
+        userId: 'guest',
+        title: 'Diagnostic Workspace',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      setChatSessions([guestSession]);
+      setActiveChatSessionId('guest-session-1');
+      return;
+    }
+
+    const unsubscribe = subscribeChatSessions(currentUser.uid, async (syncedSessions) => {
+      setChatSessions(syncedSessions);
+      if (syncedSessions.length > 0) {
+        // Auto select first session or maintain active selection if it still exists
+        const exists = syncedSessions.some(s => s.id === activeChatSessionId);
+        if (!activeChatSessionId || !exists) {
+          setActiveChatSessionId(syncedSessions[0].id);
+        }
+      } else {
+        // Auto-create a brand new session if they have none
+        const newSession = await addFirestoreChatSession(currentUser.uid, {
+          title: 'Infrastructure Audit',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        if (newSession) {
+          setActiveChatSessionId(newSession.id);
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe && unsubscribe();
+    };
+  }, [currentUser, isGuestMode, activeChatSessionId]);
+
+  // Sync Cloud Firestore Chat logs on Session / Auth Change
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   useEffect(() => {
     if (!currentUser) {
@@ -227,11 +283,17 @@ export default function App() {
       return;
     }
 
-    const unsubscribe = subscribeChats(currentUser.uid, (syncedChats) => {
+    if (!activeChatSessionId) {
+      setMessages([]);
+      return;
+    }
+
+    const unsubscribe = subscribeChats(currentUser.uid, activeChatSessionId, (syncedChats) => {
       if (syncedChats.length === 0) {
         const welcomeStr = "👋 I am your SSH Host Agent. Select any server on the dashboard or tell me what to check. I can run commands, count docker containers, find open ports, and review resources directly.";
         addFirestoreChat(currentUser.uid, {
           userId: currentUser.uid,
+          sessionId: activeChatSessionId,
           sender: 'agent',
           text: welcomeStr,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -245,7 +307,7 @@ export default function App() {
     return () => {
       unsubscribe && unsubscribe();
     };
-  }, [currentUser, isGuestMode]);
+  }, [currentUser, activeChatSessionId]);
 
   // Handle local telemetry update interval for simulated devices
   useEffect(() => {
@@ -369,9 +431,19 @@ export default function App() {
   };
 
   const handleAddChatMessage = async (msg: Omit<ChatMessage, 'id'>) => {
-    if (currentUser) {
+    if (currentUser && activeChatSessionId) {
+      // Auto-update first message title just like ChatGPT
+      const hasUserMessageBefore = messages.some(m => m.sender === 'user');
+      if (!hasUserMessageBefore && msg.sender === 'user') {
+        const textPreview = msg.text.trim();
+        const firstLine = textPreview.split('\n')[0];
+        const rawTitle = firstLine.length > 25 ? firstLine.substring(0, 25) + '...' : firstLine;
+        await updateFirestoreChatSessionTitle(currentUser.uid, activeChatSessionId, rawTitle);
+      }
+
       await addFirestoreChat(currentUser.uid, {
         userId: currentUser.uid,
+        sessionId: activeChatSessionId,
         ...msg
       });
     } else {
@@ -379,6 +451,7 @@ export default function App() {
         ...prev,
         {
           id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          sessionId: activeChatSessionId || undefined,
           ...msg
         }
       ]);
@@ -386,8 +459,8 @@ export default function App() {
   };
 
   const handleClearMessages = async () => {
-    if (currentUser) {
-      await clearFirestoreChats(currentUser.uid);
+    if (currentUser && activeChatSessionId) {
+      await clearFirestoreChatsBySession(currentUser.uid, activeChatSessionId);
     } else {
       setMessages([
         {
@@ -397,6 +470,68 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
+    }
+  };
+
+  const handleCreateNewChatSession = async () => {
+    if (currentUser) {
+      const newSession = await addFirestoreChatSession(currentUser.uid, {
+        title: 'New Conversation',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      if (newSession) {
+        setActiveChatSessionId(newSession.id);
+      }
+    } else {
+      const newId = `guest-session-${Date.now()}`;
+      const newSession: ChatSession = {
+        id: newId,
+        userId: 'guest',
+        title: 'New Conversation',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      setChatSessions(prev => [newSession, ...prev]);
+      setActiveChatSessionId(newId);
+    }
+  };
+
+  const handleDeleteChatSession = async (sessionId: string) => {
+    // If it's the only session left, we can create a fallback or just clear it
+    if (chatSessions.length <= 1) {
+      const promptTitle = currentUser ? 'Infrastructure Audit' : 'Diagnostic Workspace';
+      if (currentUser) {
+        await deleteFirestoreChatSession(currentUser.uid, sessionId);
+        const newSession = await addFirestoreChatSession(currentUser.uid, {
+          title: promptTitle,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        if (newSession) {
+          setActiveChatSessionId(newSession.id);
+        }
+      } else {
+        setMessages([
+          {
+            id: 'welcome',
+            sender: 'agent',
+            text: "👋 I am your SSH Host Agent. Select any server on the dashboard or tell me what to check. I can run commands, count docker containers, find open ports, and review resources directly.",
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      }
+      return;
+    }
+
+    if (currentUser) {
+      await deleteFirestoreChatSession(currentUser.uid, sessionId);
+    } else {
+      setChatSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (activeChatSessionId === sessionId) {
+        const remaining = chatSessions.filter(s => s.id !== sessionId);
+        setActiveChatSessionId(remaining[0].id);
+      }
     }
   };
 
@@ -544,158 +679,283 @@ export default function App() {
   return (
     <div id="application-container" className="min-h-screen bg-[#161616] text-[#f4f4f4] flex flex-col font-sans selection:bg-[#0f62fe]/20 relative">
       
-      {/* Top Navigation Frame */}
-      <header className="bg-[#161616] border-b border-[#393939] py-3.5 px-6 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-[#0f62fe] text-white rounded-none">
-              <Bot className="h-5 w-5" />
+      {/* Top Navigation Frame: Slim and Enterprise-dense (IBM Carbon Shell Header) */}
+      <header className="bg-[#161616] border-b border-[#393939] h-14 px-4 flex items-center justify-between sticky top-0 z-40 select-none">
+        <div className="flex items-center gap-3">
+          {/* Mobile hamburger menu toggle */}
+          <button
+            onClick={() => setIsMobileNavOpen(!isMobileNavOpen)}
+            className="md:hidden p-1.5 bg-[#262626] hover:bg-[#393939] border border-[#393939] text-[#c6c6c6] hover:text-white cursor-pointer transition rounded-none mr-1"
+            title="Toggle workspace sections drawer"
+          >
+            {isMobileNavOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
+
+          <div className="p-1.5 bg-[#0f62fe] text-white rounded-none shrink-0 hidden sm:block">
+            <Bot className="h-4 w-4" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-xs uppercase tracking-wider text-white font-mono select-none">BuildOS Node Commander</h1>
+              <span className="bg-[#262626] text-[#78a9ff] font-mono text-[9px] px-2 py-0.5 border border-[#393939]">
+                V1.6.5 STABLE
+              </span>
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-xs uppercase tracking-wider text-white font-mono select-none">BuildOS Node Commander</h1>
-                <span className="bg-[#262626] text-[#78a9ff] font-mono text-[9px] px-2 py-0.5 border border-[#393939]">
-                  V1.5.0 STABLE
-                </span>
-              </div>
-              <p className="text-[10px] text-[#8d8d8d] uppercase tracking-wide font-mono mt-0.5">SSH Telemetry Terminal & Cognitive Agent Gateway</p>
-            </div>
+            <p className="hidden sm:block text-[9px] text-[#8d8d8d] uppercase tracking-wider font-mono mt-0.5">
+              Secure SSH Systems Management Hub
+            </p>
+          </div>
+        </div>
+
+        {/* Global Action items */}
+        <div className="flex items-center gap-2.5">
+          {/* UTC Real-time Clock */}
+          <div className="hidden md:flex flex-col text-right pr-3 border-r border-[#393939]">
+            <span className="text-[8px] font-mono text-[#8d8d8d] uppercase tracking-widest">CLOCK_UTC</span>
+            <span className="font-mono text-xs text-[#c6c6c6] font-semibold">{utcTime || 'Syncing...'}</span>
           </div>
 
-          <div className="flex items-center gap-4 flex-wrap">
-            {/* Theme Toggle Button */}
-            <button
-              id="theme-toggle"
-              onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
-              className="p-1.5 px-3 bg-[#262626] hover:bg-[#393939] border border-[#393939] text-[#c6c6c6] hover:text-white font-mono text-[10px] font-bold tracking-wider uppercase transition rounded-none flex items-center gap-1.5 cursor-pointer"
-              title="Switch between Light & Dark theme modes"
-            >
-              {theme === 'light' ? (
-                <>
-                  <Moon className="h-3.5 w-3.5 text-[#0f62fe]" />
-                  <span>DARK MODE</span>
-                </>
-              ) : (
-                <>
-                  <Sun className="h-3.5 w-3.5 text-yellow-500 animate-pulse" />
-                  <span>LIGHT MODE</span>
-                </>
-              )}
-            </button>
-
-            {/* UTC Real-time Clock */}
-            <div className="hidden sm:block text-right">
-              <span className="text-[9px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Terminal Clock</span>
-              <span className="font-mono text-xs text-[#c6c6c6] font-semibold">{utcTime || 'Syncing...'}</span>
-            </div>
-
-            {/* Quick Status */}
-            <div className="flex items-center gap-2 bg-[#262626] px-3 py-1.5 border border-[#393939] text-[11px] font-mono uppercase text-[#42be65]">
-              <div className="h-1.5 w-1.5 bg-[#24a148]" />
-              <span>{hosts.length} Node{hosts.length !== 1 && 's'} Connected</span>
-            </div>
-
-            {/* User Profile & Sign Out options */}
-            {currentUser ? (
-              <div className="flex items-center gap-3 bg-[#262626] border border-[#393939] p-1 pr-3 rounded-none">
-                <img 
-                  src={currentUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`}
-                  alt={currentUser.displayName || 'Me'}
-                  className="h-8 w-8 rounded-none border border-[#393939] shrink-0"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="hidden md:block text-left max-w-[120px]">
-                  <span className="text-[9px] text-[#8d8d8d] block font-mono">USER_OPERATOR</span>
-                  <span className="text-xs text-white font-bold block truncate max-w-[110px]">
-                    {currentUser.displayName || currentUser.email}
-                  </span>
-                </div>
-                <button
-                  onClick={logoutUser}
-                  className="bg-[#161616] hover:bg-[#393939] p-1.5 border border-[#393939] text-[#8d8d8d] hover:text-[#ff8389] transition-all cursor-pointer rounded-none"
-                  title="Disconnect user profile and log out"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ) : isGuestMode ? (
-              <div className="flex items-center gap-2.5 bg-[#fe1f2a]/10 border border-[#fe1f2a]/35 py-1.5 px-3.5 text-xs rounded-none">
-                <span className="h-2 w-2 rounded-none bg-[#fe1f2a] animate-pulse shrink-0" />
-                <span className="text-[10px] font-bold text-[#ff8389] uppercase tracking-widest font-mono">Sandbox Sandbox</span>
-                <button
-                  onClick={() => setIsGuestMode(false)}
-                  className="text-slate-400 hover:text-white font-semibold underline pl-1"
-                >
-                  Sign In
-                </button>
-              </div>
-            ) : null}
+          {/* Quick Status */}
+          <div className="hidden lg:flex items-center gap-2 bg-[#262626] px-2.5 py-1 border border-[#393939] text-[10px] font-mono uppercase text-[#42be65]">
+            <div className="h-1 text-xs w-1 bg-[#24a148]" />
+            <span>{hosts.length} Node{hosts.length !== 1 && 's'}</span>
           </div>
+
+          {/* Theme Toggle Button */}
+          <button
+            id="theme-toggle"
+            onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+            className="p-1.5 bg-[#262626] hover:bg-[#393939] border border-[#393939] text-[#c6c6c6] hover:text-white transition rounded-none cursor-pointer"
+            title="Switch Theme"
+          >
+            {theme === 'light' ? (
+              <Moon className="h-3.5 w-3.5 text-[#0f62fe]" />
+            ) : (
+              <Sun className="h-3.5 w-3.5 text-yellow-500" />
+            )}
+          </button>
+
+          {/* User Profile & Sign Out options */}
+          {currentUser ? (
+            <div className="flex items-center gap-2 bg-[#262626] border border-[#393939] p-0.5 pr-2.5 rounded-none">
+              <img 
+                src={currentUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`}
+                alt={currentUser.displayName || 'Me'}
+                className="h-7 w-7 rounded-none border border-[#393939] shrink-0"
+                referrerPolicy="no-referrer"
+              />
+              <span className="hidden md:block font-mono text-[10px] text-white font-bold truncate max-w-[100px]">
+                {currentUser.displayName || currentUser.email}
+              </span>
+              <button
+                onClick={logoutUser}
+                className="bg-[#161616] hover:bg-[#393939] p-1 border border-[#393939] text-[#8d8d8d] hover:text-[#ff8389] transition-all cursor-pointer rounded-none ml-1.5"
+                title="Disconnect Profile"
+              >
+                <LogOut className="h-3 w-3" />
+              </button>
+            </div>
+          ) : isGuestMode ? (
+            <div className="flex items-center gap-2 bg-[#fe1f2a]/10 border border-[#fe1f2a]/35 py-1 px-2.5 text-xs rounded-none">
+              <span className="h-1.5 w-1.5 rounded-none bg-[#fe1f2a] animate-pulse shrink-0" />
+              <span className="text-[9px] font-bold text-[#ff8389] uppercase tracking-widest font-mono">Sandbox Mode</span>
+              <button
+                onClick={() => setIsGuestMode(false)}
+                className="text-slate-400 hover:text-white font-semibold underline text-[9px] pl-1 font-mono"
+              >
+                Sign In
+              </button>
+            </div>
+          ) : null}
         </div>
       </header>
 
-      {/* Primary Layout Container */}
-      <main className="flex-1 w-full max-w-7xl mx-auto py-6 px-4 md:px-6 space-y-6 relative z-10">
+      {/* Main Split Layout: Sidebar + Workspace Fluid Pane */}
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 min-w-0">
         
-        {/* Tab Selector Section */}
-        <div className="flex items-center justify-between border-b border-[#393939] pb-3 gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setActiveTab('infrastructure')}
-              className={`px-4 py-2 rounded-none text-xs font-mono font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-150 border cursor-pointer ${
-                activeTab === 'infrastructure'
-                  ? 'bg-[#0f62fe] border-[#0f62fe] text-white'
-                  : 'bg-[#161616] border-[#393939] text-[#c6c6c6] hover:bg-[#202020] hover:text-white'
-              }`}
-            >
-              <Server className="h-3.5 w-3.5" />
-              <span>NODES_LIST</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('whatsapp')}
-              className={`px-4 py-2 rounded-none text-xs font-mono font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-150 border cursor-pointer ${
-                activeTab === 'whatsapp'
-                  ? 'bg-[#0f62fe] border-[#0f62fe] text-white'
-                  : 'bg-[#161616] border-[#393939] text-[#c6c6c6] hover:bg-[#202020] hover:text-white'
-              }`}
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span>SMS_WEBHOOK</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('brain')}
-              className={`px-4 py-2 rounded-none text-xs font-mono font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-150 border cursor-pointer ${
-                activeTab === 'brain'
-                  ? 'bg-[#0f62fe] border-[#0f62fe] text-white'
-                  : 'bg-[#161616] border-[#393939] text-[#c6c6c6] hover:bg-[#202020] hover:text-white'
-              }`}
-            >
-              <Settings className="h-3.5 w-3.5" />
-              <span>BRAIN_PARAMS</span>
-            </button>
+        {/* Left Side Command Rail */}
+        <aside className={`w-full md:w-64 bg-[#121212] border-b md:border-b-0 md:border-r border-[#393939] flex flex-col flex-shrink-0 select-none ${isMobileNavOpen ? 'block' : 'hidden md:flex'}`}>
+          
+          {/* Navigation Category Groups */}
+          <div className="flex-1 overflow-y-auto py-5 space-y-5">
+            
+            {/* GROUP 1: COMPUTATIONAL FLEET */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
+                Fleet Registry
+              </span>
+              <div className="space-y-0.5">
+                <button
+                  onClick={() => {
+                    setActiveTab('fleet');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center justify-between border-l-4 cursor-pointer ${
+                    activeTab === 'fleet'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Server className={`h-4 w-4 ${activeTab === 'fleet' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                    <span>FLEET_OVERVIEW</span>
+                  </div>
+                  <span className="text-[9px] font-mono font-bold bg-[#262626] border border-[#393939] px-1.5 py-0.5 text-[#78a9ff] rounded-none">
+                    {hosts.length}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('node-details');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center justify-between border-l-4 cursor-pointer ${
+                    activeTab === 'node-details'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Cpu className={`h-4 w-4 ${activeTab === 'node-details' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                    <span>NODE_DETAILS</span>
+                  </div>
+                  {activeHost && (
+                    <span className="text-[9px] text-[#42be65] font-mono truncate max-w-[80px]">
+                      ● {activeHost.name}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* GROUP 2: DIAGNOSTICS & GATEWAYS */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
+                Operations
+              </span>
+              <div className="space-y-0.5">
+                <button
+                  onClick={() => {
+                    setActiveTab('diagnostics');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                    activeTab === 'diagnostics'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <TerminalSquare className={`h-4 w-4 ${activeTab === 'diagnostics' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span>DIAGNOSTICS_LAB</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('whatsapp');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                    activeTab === 'whatsapp'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <MessageSquare className={`h-4 w-4 ${activeTab === 'whatsapp' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span>SMS_WEBHOOK_SIM</span>
+                </button>
+              </div>
+            </div>
+
+            {/* GROUP 3: COGNITIVE SERVICES */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
+                Cognitive Matrix
+              </span>
+              <div className="space-y-0.5">
+                <button
+                  onClick={() => {
+                    setActiveTab('chat');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                    activeTab === 'chat'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <Bot className={`h-4 w-4 ${activeTab === 'chat' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span>AI_COGNITIVE_CHAT</span>
+                </button>
+              </div>
+            </div>
+
+            {/* GROUP 4: ADMINISTRATION & SECURITY */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
+                Governance
+              </span>
+              <div className="space-y-0.5">
+                <button
+                  onClick={() => {
+                    setActiveTab('settings');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                    activeTab === 'settings'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <Settings className={`h-4 w-4 ${activeTab === 'settings' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span>SYSTEM_CONFIG</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('operators');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                    activeTab === 'operators'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                  }`}
+                >
+                  <Users className={`h-4 w-4 ${activeTab === 'operators' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
+                  <span>OPERATORS</span>
+                </button>
+              </div>
+            </div>
+
           </div>
 
-          {activeTab === 'infrastructure' && (isGuestMode || authorizedRole === 'admin') && (
-            <button
-              onClick={() => {
-                setEditingHost(null);
-                setIsAddModalOpen(true);
-              }}
-              className="bg-[#0f62fe] hover:bg-[#0353e9] text-white border border-[#0f62fe] rounded-none text-xs font-mono font-bold tracking-wider uppercase px-4 py-2 flex items-center gap-2 transition-all duration-150 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Register Node</span>
-            </button>
+          {/* Sidebar Footer Register Node Trigger */}
+          {(isGuestMode || authorizedRole === 'admin') && (
+            <div className="p-4 border-t border-[#393939] bg-[#161616]">
+              <button
+                onClick={() => {
+                  setEditingHost(null);
+                  setIsAddModalOpen(true);
+                }}
+                className="w-full bg-[#0f62fe] hover:bg-[#0353e9] text-white border border-[#0f62fe] rounded-none text-[10px] font-mono font-bold tracking-widest uppercase py-2.5 flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>REGISTER_NEW_NODE</span>
+              </button>
+            </div>
           )}
-        </div>
+        </aside>
 
-        {/* Tab Contents */}
-        {activeTab === 'infrastructure' && (
+        {/* Workspace Dynamic Pane (Fully fluid on Desktop) */}
+        <main className="flex-1 bg-[#161616] py-6 px-4 md:px-6 overflow-y-auto relative z-10 min-w-0">
+          <div className="max-w-7xl mx-auto space-y-6">
+        {activeTab === 'fleet' && (
           <div className="space-y-6">
             {/* Host Machines list Section */}
-            <section className="space-y-3">
+            <section className="space-y-6">
               <div className="flex items-center justify-between border-b border-[#393939] pb-2 font-mono">
-                <h2 className="text-[10px] font-bold text-[#8d8d8d] uppercase tracking-wider block">ACTIVE INSTANCE SYSTEM METRICS</h2>
+                <h2 className="text-[10px] font-bold text-[#8d8d8d] uppercase tracking-wider block">ACTIVE FLEET GENERAL OVERVIEW</h2>
                 <span className="text-[9px] text-[#8d8d8d] uppercase tracking-wider select-none">Live Telemetry refreshed every 6s</span>
               </div>
 
@@ -704,7 +964,7 @@ export default function App() {
                   <Server className="h-10 w-10 text-[#8d8d8d] mb-4" />
                   <h3 className="font-bold font-mono text-white text-xs uppercase tracking-wider">No Nodes Registered</h3>
                   <p className="text-xs text-[#a8a8a8] max-w-sm mt-1.5 mb-5 font-sans leading-relaxed">
-                    Create instant virtual sandbox mock nodes or provision real physical VPS home target machines by attaching ssh keys on the dashboard interface.
+                    Create virtual sandbox mock nodes or provision real physical VPS home target machines by attaching ssh keys on the dashboard interface.
                   </p>
                   <button
                     onClick={() => setIsAddModalOpen(true)}
@@ -714,87 +974,199 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div id="nodes-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 animate-fade-in">
-                  {hosts.map((h) => (
-                    <div key={h.id}>
-                      <HostCard
-                        host={h}
-                        isActive={activeHostId === h.id}
-                        onSelect={() => setActiveHostId(h.id)}
-                        onEdit={() => {
-                          setEditingHost(h);
-                          setIsAddModalOpen(true);
-                        }}
-                        onDelete={() => handleDeleteHost(h.id)}
-                        onForceRefreshState={() => {}}
-                        currentUserRole={isGuestMode ? 'admin' : authorizedRole}
-                      />
+                <div className="space-y-6">
+                  {/* Fleet High-Level Aggregate Metrics */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                      <div>
+                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Connected Fleets</span>
+                        <span className="text-xl font-bold font-mono text-white mt-1 block">{hosts.length} Node{hosts.length !== 1 && 's'}</span>
+                      </div>
+                      <Server className="h-6 w-6 text-[#78a9ff]" />
                     </div>
-                  ))}
+                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                      <div>
+                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Health Diagnostics</span>
+                        <span className="text-xl font-bold font-mono text-[#42be65] mt-1 block uppercase">Active</span>
+                      </div>
+                      <div className="h-2 w-2 rounded-none bg-[#24a148] animate-pulse" />
+                    </div>
+                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                      <div>
+                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Fleet Average CPU</span>
+                        <span className="text-xl font-bold font-mono text-white mt-1 block">
+                          {hosts.length > 0
+                            ? `${Math.round(hosts.reduce((acc, h) => acc + (h.simulatedStats?.cpu || 12), 0) / hosts.length)}%`
+                            : '0%'
+                          }
+                        </span>
+                      </div>
+                      <Cpu className="h-6 w-6 text-[#78a9ff]" />
+                    </div>
+                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                      <div>
+                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Fleet RAM Capacity</span>
+                        <span className="text-xl font-bold font-mono text-white mt-1 block">
+                          {hosts.length > 0
+                            ? `${(hosts.reduce((acc, h) => acc + (h.simulatedStats?.ram || 4.2), 0) / hosts.length).toFixed(1)} GB`
+                            : '0 GB'
+                          }
+                        </span>
+                      </div>
+                      <Layers className="h-6 w-6 text-[#78a9ff]" />
+                    </div>
+                  </div>
+
+                  <div id="nodes-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 animate-fade-in">
+                    {hosts.map((h) => (
+                      <div key={h.id}>
+                        <HostCard
+                          host={h}
+                          isActive={activeHostId === h.id}
+                          onSelect={() => {
+                            setActiveHostId(h.id);
+                            setActiveTab('node-details'); // Auto-view Full Node Details Page!
+                          }}
+                          onEdit={() => {
+                            setEditingHost(h);
+                            setIsAddModalOpen(true);
+                          }}
+                          onDelete={() => handleDeleteHost(h.id)}
+                          onForceRefreshState={() => {}}
+                          currentUserRole={isGuestMode ? 'admin' : authorizedRole}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
+          </div>
+        )}
 
-            {/* Interactive Diagnostics Terminal Center */}
-            {activeHost && (
-              <NodeMonitor
-                host={activeHost}
-                currentUserRole={isGuestMode ? 'admin' : authorizedRole}
-              />
-            )}
+        {activeTab === 'node-details' && (
+          <NodeDetailsPage
+            host={activeHost}
+            hosts={hosts}
+            setActiveHostId={setActiveHostId}
+            onBackToFeet={() => setActiveTab('fleet')}
+            currentUserRole={isGuestMode ? 'admin' : authorizedRole}
+          />
+        )}
 
-            {/* Split Workspace Column layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Voice Agent Portal */}
-              <div className="lg:col-span-6 flex flex-col">
-                <VoiceAgent
-                  hosts={hosts}
-                  activeHostId={activeHostId}
-                  onLogged={handleLoggedCommand}
-                  currentUser={currentUser}
-                  messages={messages}
-                  onAddMessage={handleAddChatMessage}
-                  onClearMessages={handleClearMessages}
+        {activeTab === 'diagnostics' && (
+          <div className="space-y-6">
+            {/* Host dropdown selector */}
+            <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-mono text-xs">
+              <div className="flex items-center gap-3">
+                <span className="text-[#8d8d8d] uppercase tracking-wider">Select Active Node target:</span>
+                <select
+                  value={activeHostId || ''}
+                  onChange={(e) => setActiveHostId(e.target.value || null)}
+                  className="bg-[#161616] border border-[#393939] text-white text-xs font-mono px-3 py-1.5 focus:outline-none focus:border-[#0f62fe] cursor-pointer"
+                >
+                  <option value="">-- NO INSTANCE SELECTED --</option>
+                  {hosts.map(h => (
+                    <option key={h.id} value={h.id}>
+                      {h.name} ({h.ip}:{h.port}) - {h.isSimulated ? 'VIRTUAL' : 'PHYSICAL'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {activeHost && (
+                <div className="flex items-center gap-3">
+                  <span className="text-[#8d8d8d] uppercase tracking-wider">Node Status:</span>
+                  <span className="bg-[#1a3821] text-[#42be65] font-bold text-[10px] px-2.5 py-1 border border-[#24a148]/30 uppercase tracking-widest flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 bg-[#42be65] rounded-none animate-pulse" />
+                    ONLINE & METRIC_INGRESS_STABLE
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {activeHost ? (
+              <div className="space-y-6">
+                {/* Node details, metrics, docker & service controls */}
+                <NodeMonitor
+                  host={activeHost}
                   currentUserRole={isGuestMode ? 'admin' : authorizedRole}
                 />
-              </div>
 
-              {/* Console & Shell Logs */}
-              <div className="lg:col-span-6 flex flex-col space-y-4">
-                {/* Visual Direct Terminal Console */}
-                <div className="flex-1">
-                  <SSHConsole
-                    host={activeHost}
-                    onLogged={handleLoggedCommand}
-                    currentUserRole={isGuestMode ? 'admin' : authorizedRole}
-                  />
-                </div>
-
-                {/* Audit Terminal History Log Trail */}
-                <div className="bg-[#262626] border border-[#393939] rounded-none p-4 flex flex-col h-[200px]">
-                  <div className="flex items-center gap-1.5 text-slate-300 font-bold border-b border-[#393939] pb-2 mb-2 select-none font-mono uppercase text-xs">
-                    <History className="h-4 w-4 text-[#78a9ff]" />
-                    <span>Security Terminal Audit Logs</span>
+                {/* split console and logs */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* SSH Terminal Console */}
+                  <div className="lg:col-span-7 flex flex-col">
+                    <SSHConsole
+                      host={activeHost}
+                      onLogged={handleLoggedCommand}
+                      currentUserRole={isGuestMode ? 'admin' : authorizedRole}
+                    />
                   </div>
 
-                  <div id="audit-logs-list" className="flex-1 overflow-y-auto space-y-2 max-h-[148px] scrollbar-thin">
-                    {terminalLogs.map((log) => (
-                      <div key={log.id} className="flex items-start justify-between gap-4 font-mono text-[10px] p-2 bg-[#161616] border border-[#393939] rounded-none">
-                        <div className="truncate shrink-1">
-                          <span className={`${log.isError ? 'text-[#ff8389]' : 'text-[#42be65]'}`}>[$]</span>{' '}
-                          <span className="text-[#78a9ff] font-bold">[{log.hostName}]</span>{' '}
-                          <code className="text-[#f4f4f4]">{log.command}</code>
-                        </div>
-                        <span className="text-[9px] text-[#8d8d8d] shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                  {/* Terminal history audit logs */}
+                  <div className="lg:col-span-5 flex flex-col">
+                    <div className="bg-[#262626] border border-[#393939] rounded-none p-4 flex flex-col h-full min-h-[300px]">
+                      <div className="flex items-center gap-1.5 text-slate-300 font-bold border-b border-[#393939] pb-2 mb-3 select-none font-mono uppercase text-xs">
+                        <History className="h-4 w-4 text-[#78a9ff]" />
+                        <span>Security Terminal Audit Logs</span>
                       </div>
-                    ))}
-                    {terminalLogs.length === 0 && (
-                      <p className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wide py-4 text-center select-none">No diagnostic log trails recorded yet.</p>
-                    )}
+
+                      <div id="audit-logs-list" className="flex-grow overflow-y-auto space-y-2 max-h-[320px] scrollbar-thin">
+                        {terminalLogs.map((log) => (
+                          <div key={log.id} className="flex items-start justify-between gap-4 font-mono text-[10px] p-2.5 bg-[#161616] border border-[#393939] rounded-none">
+                            <div className="truncate shrink">
+                              <span className={`${log.isError ? 'text-[#ff8389]' : 'text-[#42be65]'}`}>[$]</span>{' '}
+                              <span className="text-[#78a9ff] font-bold">[{log.hostName}]</span>{' '}
+                              <code className="text-[#f4f4f4]">{log.command}</code>
+                            </div>
+                            <span className="text-[9px] text-[#8d8d8d] shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                          </div>
+                        ))}
+                        {terminalLogs.length === 0 && (
+                          <p className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wide py-14 text-center select-none">No diagnostic log trails recorded yet.</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="border border-[#393939] bg-[#262626] p-16 rounded-none text-center flex flex-col items-center justify-center">
+                <TerminalSquare className="h-12 w-12 text-[#8d8d8d] mb-4 animate-pulse" />
+                <h3 className="font-bold font-mono text-white text-xs uppercase tracking-wider">No Node Selected for Inspection</h3>
+                <p className="text-xs text-[#a8a8a8] max-w-sm mt-1.5 mb-6 font-sans leading-relaxed">
+                  Choose a node from the dedicated Fleet Dashboard tab, or select an operational VM target from the selector list above to begin diagnostics.
+                </p>
+                {hosts.length > 0 && (
+                  <button
+                    onClick={() => setActiveHostId(hosts[0].id)}
+                    className="bg-[#0f62fe] hover:bg-[#0353e9] text-white border border-[#0f62fe] text-xs font-mono uppercase tracking-wider font-bold px-5 py-2.5 rounded-none transition-all cursor-pointer"
+                  >
+                    Diagnose {hosts[0].name}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'chat' && (
+          <div className="h-[700px] animate-fade-in flex flex-col">
+            <VoiceAgent
+              hosts={hosts}
+              activeHostId={activeHostId}
+              onLogged={handleLoggedCommand}
+              currentUser={currentUser}
+              messages={messages}
+              onAddMessage={handleAddChatMessage}
+              onClearMessages={handleClearMessages}
+              currentUserRole={isGuestMode ? 'admin' : authorizedRole}
+              chatSessions={chatSessions}
+              activeChatSessionId={activeChatSessionId}
+              onSelectSession={setActiveChatSessionId}
+              onNewSession={handleCreateNewChatSession}
+              onDeleteSession={handleDeleteChatSession}
+            />
           </div>
         )}
 
@@ -804,14 +1176,21 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'brain' && (
+        {activeTab === 'settings' && (
           <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
             <LLMConfigPanel onSaved={handleApplyConfig} />
+          </div>
+        )}
+
+        {activeTab === 'operators' && (
+          <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
             <UserManagementPanel currentUserRole={isGuestMode ? 'admin' : authorizedRole} />
           </div>
         )}
 
-      </main>
+          </div>
+        </main>
+      </div>
 
       {/* Footer Banner */}
       <footer className="bg-[#111111] border-t border-[#393939] py-5 px-6 mt-12 text-center text-[10px] font-mono text-[#8d8d8d] select-none uppercase tracking-wider">
