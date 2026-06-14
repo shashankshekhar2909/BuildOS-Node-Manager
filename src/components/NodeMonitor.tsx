@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Activity, Play, Square, RotateCw, Layers, Shield, 
-  Cpu, HardDrive, RefreshCw, AlertCircle, CheckCircle2, XCircle, Clock
+import {
+  Activity, Play, Square, RotateCw, Layers, Shield,
+  Cpu, HardDrive, RefreshCw, AlertCircle, CheckCircle2, XCircle, Clock,
+  Box, ChevronDown, ChevronRight, Container
 } from 'lucide-react';
 import { HostMachine } from '../types';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
@@ -32,6 +33,20 @@ interface MetricsSnapshot {
   disk: number;
 }
 
+interface LxcContainer {
+  ctid: string;
+  status: string;
+  name: string;
+}
+
+interface LxcDockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  status: string;
+  ports: string;
+}
+
 export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps) {
   const [data, setData] = useState<{
     cpu: number;
@@ -46,7 +61,16 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<'status' | 'docker' | 'services'>('status');
+  const [activeSubTab, setActiveSubTab] = useState<'status' | 'docker' | 'services' | 'lxc'>('status');
+
+  // ProxMox LXC state
+  const [lxcList, setLxcList] = useState<LxcContainer[] | null>(null);
+  const [lxcLoading, setLxcLoading] = useState(false);
+  const [lxcError, setLxcError] = useState<string | null>(null);
+  const [expandedCtids, setExpandedCtids] = useState<Set<string>>(new Set());
+  const [lxcDocker, setLxcDocker] = useState<Record<string, LxcDockerContainer[]>>({});
+  const [lxcDockerLoading, setLxcDockerLoading] = useState<Record<string, boolean>>({});
+  const [lxcActionLoading, setLxcActionLoading] = useState<string | null>(null);
 
   const isReadOnly = currentUserRole === 'viewer';
 
@@ -54,7 +78,11 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
     if (!host) return;
     if (showLoading) setIsLoading(true);
     try {
-      const res = await fetch(`/api/hosts/${host.id}/details`);
+      const res = await fetch(`/api/hosts/${host.id}/details`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+      });
       if (!res.ok) throw new Error("Could not fetch node telemetry details.");
       const details = await res.json();
       setData(details);
@@ -149,7 +177,7 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
       const res = await fetch(`/api/hosts/${host.id}/services/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serviceName, actionName })
+        body: JSON.stringify({ serviceName, actionName, host })
       });
       if (!res.ok) {
         const err = await res.json();
@@ -161,6 +189,118 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
       alert(`Service Action Status Failure: ${e.message}`);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  // Fix: pass host object so Firestore-managed hosts work
+  const triggerDockerActionFixed = async (containerId: string, containerName: string, actionName: string) => {
+    if (!host) return;
+    setActionLoading(`docker-${containerId}-${actionName}`);
+    try {
+      const res = await fetch(`/api/hosts/${host.id}/docker/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ containerId, containerName, actionName, host })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Action failed");
+      }
+      await fetchDetails(false);
+    } catch (e: any) {
+      alert(`Docker Action failed: ${e.message}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const fetchLxcList = async () => {
+    if (!host) return;
+    setLxcLoading(true);
+    setLxcError(null);
+    try {
+      const res = await fetch(`/api/hosts/${host.id}/pct/list`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      setLxcList(json.containers);
+    } catch (e: any) {
+      setLxcError(e.message || "Failed to list LXC containers");
+    } finally {
+      setLxcLoading(false);
+    }
+  };
+
+  const toggleLxcExpand = async (ctid: string) => {
+    const next = new Set(expandedCtids);
+    if (next.has(ctid)) {
+      next.delete(ctid);
+      setExpandedCtids(next);
+      return;
+    }
+    next.add(ctid);
+    setExpandedCtids(next);
+    if (lxcDocker[ctid]) return; // already fetched
+    setLxcDockerLoading(prev => ({ ...prev, [ctid]: true }));
+    try {
+      const res = await fetch(`/api/hosts/${host!.id}/pct/${ctid}/docker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+      });
+      const json = await res.json();
+      setLxcDocker(prev => ({ ...prev, [ctid]: json.containers || [] }));
+    } catch {
+      setLxcDocker(prev => ({ ...prev, [ctid]: [] }));
+    } finally {
+      setLxcDockerLoading(prev => ({ ...prev, [ctid]: false }));
+    }
+  };
+
+  const triggerLxcAction = async (ctid: string, actionName: string) => {
+    setLxcActionLoading(`lxc-${ctid}-${actionName}`);
+    try {
+      const res = await fetch(`/api/hosts/${host!.id}/pct/${ctid}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actionName, host })
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+      await fetchLxcList();
+    } catch (e: any) {
+      alert(`LXC action failed: ${e.message}`);
+    } finally {
+      setLxcActionLoading(null);
+    }
+  };
+
+  const triggerLxcDockerAction = async (ctid: string, containerId: string, containerName: string, actionName: string) => {
+    setLxcActionLoading(`docker-${ctid}-${containerId}-${actionName}`);
+    try {
+      const res = await fetch(`/api/hosts/${host!.id}/pct/${ctid}/docker/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ containerId, containerName, actionName, host })
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+      // Refresh docker list for this ctid
+      setLxcDocker(prev => ({ ...prev, [ctid]: [] }));
+      setLxcDockerLoading(prev => ({ ...prev, [ctid]: true }));
+      const r2 = await fetch(`/api/hosts/${host!.id}/pct/${ctid}/docker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+      });
+      const j2 = await r2.json();
+      setLxcDocker(prev => ({ ...prev, [ctid]: j2.containers || [] }));
+    } catch (e: any) {
+      alert(`Docker action in LXC failed: ${e.message}`);
+    } finally {
+      setLxcActionLoading(null);
+      setLxcDockerLoading(prev => ({ ...prev, [ctid]: false }));
     }
   };
 
@@ -177,23 +317,23 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
       {/* Node Header Info Banner */}
       <div className="p-4 bg-[#262626] border-b border-[#393939] flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-[#0f62fe]/10 border border-[#0f62fe] text-white rounded-none">
-            <Activity className="h-4.5 w-4.5 animate-pulse text-[#78a9ff]" />
+          <div className="p-2 bg-[#0f62fe]/10 border border-[#0f62fe]/40 rounded-none shrink-0">
+            <Activity className="h-4 w-4 text-[#4589ff]" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="font-bold text-white text-sm tracking-tight">{host.name}</h2>
-              <span className={`text-[9px] font-bold font-mono uppercase px-2 py-0.5 border ${
-                host.isSimulated 
-                  ? 'bg-[#0f62fe]/10 text-[#78a9ff] border-[#0f62fe]/35' 
-                  : 'bg-[#24a148]/10 text-[#42be65] border-[#24a148]/35'
+              <h2 className="font-semibold text-white text-[14px] font-sans">{host.name}</h2>
+              <span className={`text-[10px] font-sans font-medium px-2 py-0.5 border ${
+                host.isSimulated
+                  ? 'bg-[#0f2040] text-[#78a9ff] border-[#0f62fe]/40'
+                  : 'bg-[#0f2d14] text-[#42be65] border-[#24a148]/40'
               }`}>
-                {host.isSimulated ? 'VIRTUAL MOCK' : 'LIVE HOST'}
+                {host.isSimulated ? 'Simulated' : 'Physical'}
               </span>
             </div>
-            <p className="text-[10px] text-[#a8a8a8] font-mono tracking-wider mt-1 uppercase">
-              {host.username}@{host.ip}:{host.port} 
-              {data?.uptime && <span className="text-[#8d8d8d] ml-2">| UP: {data.uptime.replace('up', '').trim()}</span>}
+            <p className="text-[11px] text-[#8d8d8d] font-mono mt-0.5">
+              {host.username}@{host.ip}:{host.port}
+              {data?.uptime && <span className="text-[#6f6f6f] ml-2">· up {data.uptime.replace('up', '').trim()}</span>}
             </p>
           </div>
         </div>
@@ -212,46 +352,35 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
       </div>
 
       {/* Internal Subtabs Row */}
-      <div className="flex border-b border-[#393939] bg-[#202020] px-4">
-        <button
-          onClick={() => setActiveSubTab('status')}
-          className={`py-3 px-4 font-mono text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
-            activeSubTab === 'status'
-              ? 'border-[#0f62fe] text-[#78a9ff]'
-              : 'border-transparent text-[#a8a8a8] hover:text-white'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <Clock className="h-3.5 w-3.5" />
-            <span>Telemetry History</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveSubTab('docker')}
-          className={`py-3 px-4 font-mono text-xs font-bold uppercase tracking-wider border-b-2 transition-all relative ${
-            activeSubTab === 'docker'
-              ? 'border-[#0f62fe] text-[#78a9ff]'
-              : 'border-transparent text-[#a8a8a8] hover:text-white'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <Layers className="h-3.5 w-3.5" />
-            <span>Docker Containers ({data?.docker?.length || 0})</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveSubTab('services')}
-          className={`py-3 px-4 font-mono text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
-            activeSubTab === 'services'
-              ? 'border-[#0f62fe] text-[#78a9ff]'
-              : 'border-transparent text-[#a8a8a8] hover:text-white'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <Shield className="h-3.5 w-3.5" />
-            <span>System Services ({data?.services?.length || 0})</span>
-          </div>
-        </button>
+      <div className="flex border-b border-[#393939] bg-[#1a1a1a] px-4 overflow-x-auto">
+        {([
+          { key: 'status', icon: Clock, label: 'Telemetry', count: null },
+          { key: 'docker', icon: Layers, label: 'Containers', count: data?.docker?.length ?? 0 },
+          { key: 'services', icon: Shield, label: 'Services', count: data?.services?.length ?? 0 },
+          ...(host.proxmox ? [{ key: 'lxc', icon: Box, label: 'LXC', count: lxcList?.length ?? null }] : []),
+        ] as const).map(({ key, icon: Icon, label, count }) => (
+          <button
+            key={key}
+            onClick={() => {
+              setActiveSubTab(key as any);
+              if (key === 'lxc' && !lxcList && !lxcLoading) fetchLxcList();
+            }}
+            className={`py-3 px-4 text-[12px] font-sans font-medium border-b-2 transition-all flex items-center gap-2 shrink-0 ${
+              activeSubTab === key
+                ? 'border-[#0f62fe] text-white'
+                : 'border-transparent text-[#8d8d8d] hover:text-[#c6c6c6]'
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span>{label}</span>
+            {count !== null && (
+              <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-none ${
+                activeSubTab === key ? 'bg-[#0f62fe]/20 text-[#78a9ff]' : 'bg-[#262626] text-[#6f6f6f]'
+              }`}>{count}</span>
+            )}
+            {key === 'lxc' && <span className="text-[9px] text-[#f1c21b] font-mono ml-0.5">PVE</span>}
+          </button>
+        ))}
       </div>
 
       {/* Tab Panels */}
@@ -266,55 +395,53 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
         {/* 1. Status metrics panel: Live Area Charts */}
         {activeSubTab === 'status' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* CPU Meter */}
-              <div className="bg-[#202020] border border-[#393939] p-4 text-left">
-                <span className="text-[10px] font-mono font-bold text-[#8d8d8d] uppercase tracking-wider flex items-center gap-1.5 mb-1 bg-[#161616] p-1.5 border border-[#393939]">
-                  <Cpu className="h-3.5 w-3.5 text-[#78a9ff]" />
-                  <span>Real-time CPU Usage</span>
-                </span>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <h3 className="text-3xl font-bold font-mono text-[#f4f4f4] tracking-tight">{data?.cpu ?? host.simulatedStats?.cpu ?? 0}%</h3>
-                  <span className="text-[10px] text-[#8d8d8d] font-mono leading-none">Cores: Dynamic Allocation</span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* CPU */}
+              <div className="bg-[#1e1e1e] border border-[#393939] border-l-2 border-l-[#24a148] p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[11px] text-[#8d8d8d] font-sans flex items-center gap-1.5">
+                    <Cpu className="h-3.5 w-3.5 text-[#42be65]" /> CPU Usage
+                  </span>
+                  <span className="text-[10px] text-[#6f6f6f] font-mono">live</span>
                 </div>
+                <h3 className="text-3xl font-bold font-mono text-white tracking-tight">{data?.cpu ?? host.simulatedStats?.cpu ?? 0}%</h3>
+                <p className="text-[10px] text-[#6f6f6f] font-sans mt-1">Dynamic core allocation</p>
               </div>
 
-              {/* RAM Meter */}
-              <div className="bg-[#202020] border border-[#393939] p-4 text-left">
-                <span className="text-[10px] font-mono font-bold text-[#8d8d8d] uppercase tracking-wider flex items-center gap-1.5 mb-1 bg-[#161616] p-1.5 border border-[#393939]">
-                  <Activity className="h-3.5 w-3.5 text-[#78a9ff]" />
-                  <span>Real-time RAM Usage</span>
-                </span>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <div>
-                    <h3 className="text-3xl font-bold font-mono text-[#f4f4f4] tracking-tight">
-                      {data?.ram ? `${data.ram.percent}%` : host.simulatedStats ? `${Math.round((host.simulatedStats.ram / (host.id === 'host-sim3' ? 16 : host.id === 'host-sim2' ? 8 : 4)) * 100)}%` : '0%'}
-                    </h3>
-                    <p className="text-[10px] text-[#8d8d8d] font-mono mt-1">
-                      {data?.ram ? `${data.ram.used} GB / ${data.ram.total} GB` : `~${host.simulatedStats?.ram || 0} GB used`}
-                    </p>
-                  </div>
+              {/* RAM */}
+              <div className="bg-[#1e1e1e] border border-[#393939] border-l-2 border-l-[#4589ff] p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[11px] text-[#8d8d8d] font-sans flex items-center gap-1.5">
+                    <Activity className="h-3.5 w-3.5 text-[#4589ff]" /> Memory
+                  </span>
+                  <span className="text-[10px] text-[#6f6f6f] font-mono">live</span>
                 </div>
+                <h3 className="text-3xl font-bold font-mono text-white tracking-tight">
+                  {data?.ram ? `${data.ram.percent}%` : host.simulatedStats ? `${Math.round((host.simulatedStats.ram / (host.id === 'host-sim3' ? 16 : host.id === 'host-sim2' ? 8 : 4)) * 100)}%` : '0%'}
+                </h3>
+                <p className="text-[10px] text-[#6f6f6f] font-sans mt-1">
+                  {data?.ram ? `${data.ram.used} GB / ${data.ram.total} GB` : `~${host.simulatedStats?.ram || 0} GB used`}
+                </p>
               </div>
 
-              {/* Disk Meter */}
-              <div className="bg-[#202020] border border-[#393939] p-4 text-left">
-                <span className="text-[10px] font-mono font-bold text-[#8d8d8d] uppercase tracking-wider flex items-center gap-1.5 mb-1 bg-[#161616] p-1.5 border border-[#393939]">
-                  <HardDrive className="h-3.5 w-3.5 text-[#78a9ff]" />
-                  <span>Persistent Storage</span>
-                </span>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <h3 className="text-3xl font-bold font-mono text-[#f4f4f4] tracking-tight">{data?.disk ?? host.simulatedStats?.disk ?? 0}%</h3>
-                  <span className="text-[10px] text-[#8d8d8d] font-mono leading-none">Mount: Root (/)</span>
+              {/* Disk */}
+              <div className="bg-[#1e1e1e] border border-[#393939] border-l-2 border-l-[#8a3ffc] p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[11px] text-[#8d8d8d] font-sans flex items-center gap-1.5">
+                    <HardDrive className="h-3.5 w-3.5 text-[#a56eff]" /> Storage
+                  </span>
+                  <span className="text-[10px] text-[#6f6f6f] font-mono">root (/)</span>
                 </div>
+                <h3 className="text-3xl font-bold font-mono text-white tracking-tight">{data?.disk ?? host.simulatedStats?.disk ?? 0}%</h3>
+                <p className="text-[10px] text-[#6f6f6f] font-sans mt-1">Disk occupancy</p>
               </div>
             </div>
 
             {/* Recharts Live Chart Canvas */}
             <div className="bg-[#202020] border border-[#393939] p-4">
               <div className="flex items-center justify-between border-b border-[#393939] pb-3 mb-4 font-mono text-[10px] text-[#8d8d8d]">
-                <span className="font-bold uppercase tracking-wider text-[#78a9ff]">Live Performance Analytics Graph (5s interval)</span>
-                <span>Y-Axis: Utilization %</span>
+                <span className="font-semibold text-[#c6c6c6] font-sans text-[12px]">Performance History</span>
+                <span className="text-[10px] text-[#525252] font-mono">5s interval · last 15 snapshots</span>
               </div>
 
               <div className="h-[210px] w-full">
@@ -402,7 +529,7 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
                               {isUp ? (
                                 <button
                                   disabled={isReadOnly || !!actionLoading}
-                                  onClick={() => triggerDockerAction(c.id, c.name, 'stop')}
+                                  onClick={() => triggerDockerActionFixed(c.id, c.name, 'stop')}
                                   title="Stop Running Container"
                                   className="p-1 px-2 bg-[#ff8389]/10 hover:bg-[#da1e28] hover:text-white border border-[#ff8389]/30 text-[#ff8389] rounded-none text-[10px] font-bold tracking-wider uppercase transition cursor-pointer flex items-center gap-1 disabled:opacity-40"
                                 >
@@ -412,7 +539,7 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
                               ) : (
                                 <button
                                   disabled={isReadOnly || !!actionLoading}
-                                  onClick={() => triggerDockerAction(c.id, c.name, 'start')}
+                                  onClick={() => triggerDockerActionFixed(c.id, c.name, 'start')}
                                   title="Start Exited Container"
                                   className="p-1 px-2 bg-[#42be65]/10 hover:bg-[#24a148] hover:text-white border border-[#42be65]/35 text-[#42be65] rounded-none text-[10px] font-bold tracking-wider uppercase transition cursor-pointer flex items-center gap-1 disabled:opacity-40"
                                 >
@@ -422,7 +549,7 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
                               )}
                               <button
                                 disabled={isReadOnly || !!actionLoading}
-                                onClick={() => triggerDockerAction(c.id, c.name, 'restart')}
+                                onClick={() => triggerDockerActionFixed(c.id, c.name, 'restart')}
                                 title="Restart Active Container"
                                 className="p-1 px-2 bg-[#78a9ff]/10 hover:bg-[#0f62fe] hover:text-white border border-[#78a9ff]/35 text-[#78a9ff] rounded-none text-[10px] font-bold tracking-wider uppercase transition cursor-pointer flex items-center gap-1 disabled:opacity-40"
                               >
@@ -516,6 +643,188 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
                 No systemd service descriptors detected.
               </div>
             )}
+          </div>
+        )}
+
+        {/* 4. ProxMox LXC management panel */}
+        {activeSubTab === 'lxc' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between font-mono text-[10px] text-[#8d8d8d] border-b border-[#393939] pb-2 mb-2">
+              <span className="uppercase tracking-wider">ProxMox LXC containers · pct exec chaining</span>
+              <button
+                onClick={fetchLxcList}
+                disabled={lxcLoading}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-[#393939] hover:bg-[#4d4d4d] border border-[#4d4d4d] text-white text-[10px] font-mono transition cursor-pointer disabled:opacity-40"
+              >
+                <RefreshCw className={`h-3 w-3 ${lxcLoading ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
+            </div>
+
+            {lxcError && (
+              <div className="flex items-start gap-2 p-3 bg-red-500/5 border border-red-500/20 text-[#ff8389] text-[11px] font-mono">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>{lxcError}</span>
+              </div>
+            )}
+
+            {lxcLoading && !lxcList && (
+              <div className="py-10 text-center text-[#8d8d8d] font-mono text-[10px] animate-pulse uppercase tracking-wider">
+                Querying pct list...
+              </div>
+            )}
+
+            {lxcList && lxcList.length === 0 && (
+              <div className="border border-[#393939] p-10 bg-[#202020] text-center text-[#8d8d8d] font-mono text-[10px] uppercase tracking-wider">
+                No LXC containers found on this ProxMox host.
+              </div>
+            )}
+
+            {lxcList && lxcList.map(ct => {
+              const isRunning = ct.status === 'running';
+              const isExpanded = expandedCtids.has(ct.ctid);
+              const dockerList = lxcDocker[ct.ctid];
+              const dockerLoading = lxcDockerLoading[ct.ctid];
+
+              return (
+                <div key={ct.ctid} className="border border-[#393939] bg-[#202020] overflow-hidden">
+                  {/* LXC row header */}
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    <button
+                      onClick={() => toggleLxcExpand(ct.ctid)}
+                      className="text-[#8d8d8d] hover:text-white transition cursor-pointer shrink-0"
+                    >
+                      {isExpanded
+                        ? <ChevronDown className="h-3.5 w-3.5" />
+                        : <ChevronRight className="h-3.5 w-3.5" />
+                      }
+                    </button>
+
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <Box className="h-3.5 w-3.5 text-[#f1c21b] shrink-0" />
+                      <span className="font-mono text-[12px] font-bold text-white truncate">{ct.name}</span>
+                      <span className="text-[10px] text-[#6f6f6f] font-mono shrink-0">CT {ct.ctid}</span>
+                    </div>
+
+                    <span className={`flex items-center gap-1 text-[10px] font-sans px-2 py-0.5 border ${
+                      isRunning
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : 'bg-[#393939]/30 text-[#8d8d8d] border-[#525252]/30'
+                    }`}>
+                      <span className={`h-1.5 w-1.5 rounded-none ${isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-[#525252]'}`} />
+                      {ct.status}
+                    </span>
+
+                    {!isReadOnly && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {isRunning ? (
+                          <>
+                            <button
+                              disabled={!!lxcActionLoading}
+                              onClick={() => triggerLxcAction(ct.ctid, 'shutdown')}
+                              className="px-2 py-1 text-[9px] font-mono font-bold uppercase border border-[#ff8389]/30 text-[#ff8389] hover:bg-[#da1e28] hover:text-white transition cursor-pointer disabled:opacity-40"
+                            >
+                              Stop
+                            </button>
+                            <button
+                              disabled={!!lxcActionLoading}
+                              onClick={() => triggerLxcAction(ct.ctid, 'restart')}
+                              className="px-2 py-1 text-[9px] font-mono font-bold uppercase border border-[#78a9ff]/30 text-[#78a9ff] hover:bg-[#0f62fe] hover:text-white transition cursor-pointer disabled:opacity-40"
+                            >
+                              Restart
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            disabled={!!lxcActionLoading}
+                            onClick={() => triggerLxcAction(ct.ctid, 'start')}
+                            className="px-2 py-1 text-[9px] font-mono font-bold uppercase border border-[#42be65]/30 text-[#42be65] hover:bg-[#24a148] hover:text-white transition cursor-pointer disabled:opacity-40"
+                          >
+                            Start
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Expanded: Docker containers inside this LXC */}
+                  {isExpanded && (
+                    <div className="border-t border-[#393939] bg-[#161616] px-4 py-3">
+                      <div className="flex items-center gap-1.5 mb-2 text-[10px] text-[#6f6f6f] font-mono uppercase tracking-wider">
+                        <Container className="h-3 w-3" />
+                        <span>Docker inside CT {ct.ctid} · via pct exec {ct.ctid} -- docker ps</span>
+                      </div>
+
+                      {dockerLoading && (
+                        <p className="text-[10px] font-mono text-[#525252] animate-pulse py-2">Fetching docker containers...</p>
+                      )}
+
+                      {!dockerLoading && (!dockerList || dockerList.length === 0) && (
+                        <p className="text-[10px] font-mono text-[#525252] py-2">
+                          {isRunning ? 'No Docker containers found inside this LXC.' : 'Start the LXC to inspect Docker containers.'}
+                        </p>
+                      )}
+
+                      {!dockerLoading && dockerList && dockerList.length > 0 && (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full font-mono text-[11px] text-left">
+                            <thead className="text-[10px] text-[#8d8d8d] border-b border-[#393939]">
+                              <tr>
+                                <th className="pb-1.5 pr-4">Name</th>
+                                <th className="pb-1.5 pr-4">Image</th>
+                                <th className="pb-1.5 pr-4">Status</th>
+                                <th className="pb-1.5 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#2d2d2d]">
+                              {dockerList.map(c => {
+                                const isUp = c.status.toLowerCase().includes('up');
+                                const actKey = `docker-${ct.ctid}-${c.id}`;
+                                return (
+                                  <tr key={c.id}>
+                                    <td className="py-2 pr-4 text-[#78a9ff] font-bold">{c.name}</td>
+                                    <td className="py-2 pr-4 text-[#a8a8a8] max-w-[140px] truncate">{c.image}</td>
+                                    <td className="py-2 pr-4">
+                                      <span className={`text-[9px] px-1.5 py-0.5 border ${
+                                        isUp ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-[#8d8d8d] border-[#525252]/30'
+                                      }`}>{c.status}</span>
+                                    </td>
+                                    <td className="py-2 text-right">
+                                      {!isReadOnly && (
+                                        <div className="flex items-center justify-end gap-1">
+                                          {isUp ? (
+                                            <button
+                                              disabled={!!lxcActionLoading}
+                                              onClick={() => triggerLxcDockerAction(ct.ctid, c.id, c.name, 'stop')}
+                                              className="px-2 py-0.5 text-[9px] border border-[#ff8389]/30 text-[#ff8389] hover:bg-[#da1e28] hover:text-white transition cursor-pointer disabled:opacity-40"
+                                            >Stop</button>
+                                          ) : (
+                                            <button
+                                              disabled={!!lxcActionLoading}
+                                              onClick={() => triggerLxcDockerAction(ct.ctid, c.id, c.name, 'start')}
+                                              className="px-2 py-0.5 text-[9px] border border-[#42be65]/30 text-[#42be65] hover:bg-[#24a148] hover:text-white transition cursor-pointer disabled:opacity-40"
+                                            >Start</button>
+                                          )}
+                                          <button
+                                            disabled={!!lxcActionLoading}
+                                            onClick={() => triggerLxcDockerAction(ct.ctid, c.id, c.name, 'restart')}
+                                            className="px-2 py-0.5 text-[9px] border border-[#78a9ff]/30 text-[#78a9ff] hover:bg-[#0f62fe] hover:text-white transition cursor-pointer disabled:opacity-40"
+                                          >Restart</button>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

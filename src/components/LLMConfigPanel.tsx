@@ -9,7 +9,7 @@ interface LLMConfigPanelProps {
 export default function LLMConfigPanel({ onSaved }: LLMConfigPanelProps) {
   const [provider, setProvider] = useState<LLMProvider>('gemini');
   const [apiKey, setApiKey] = useState('');
-  const [modelName, setModelName] = useState('gemini-3.5-flash');
+  const [modelName, setModelName] = useState('gemini-2.0-flash');
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [loading, setLoading] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -21,7 +21,7 @@ export default function LLMConfigPanel({ onSaved }: LLMConfigPanelProps) {
       .then((data: LLMConfig) => {
         setProvider(data.provider || 'gemini');
         setApiKey(data.apiKey || '');
-        setModelName(data.modelName || 'gemini-3.5-flash');
+        setModelName(data.modelName || 'gemini-2.0-flash');
         setCustomEndpoint(data.customEndpoint || '');
       })
       .catch((err) => console.error('Error fetching LLM config:', err));
@@ -30,7 +30,7 @@ export default function LLMConfigPanel({ onSaved }: LLMConfigPanelProps) {
   const handleProviderPreset = (prov: LLMProvider) => {
     setProvider(prov);
     if (prov === 'gemini') {
-      setModelName('gemini-3.5-flash');
+      setModelName('gemini-2.0-flash');
       setCustomEndpoint('');
     } else if (prov === 'openai') {
       setModelName('gpt-4o-mini');
@@ -118,7 +118,7 @@ export default function LLMConfigPanel({ onSaved }: LLMConfigPanelProps) {
               required
               value={modelName}
               onChange={(e) => setModelName(e.target.value)}
-              placeholder="e.g. gemini-3.5-flash / gpt-4o-mini"
+              placeholder="e.g. gemini-2.0-flash / gpt-4o-mini"
               className="w-full bg-[#161616] border border-[#393939] rounded-none px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-[#0f62fe] transition"
             />
           </div>
