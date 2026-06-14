@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Mic, MicOff, Volume2, VolumeX, Send, Bot, User, Cpu, AlertCircle, 
   ChevronDown, ChevronUp, Sparkles, Zap, Trash2, Phone, PhoneOff, Radio,
-  MessageSquare, Plus
+  MessageSquare, Plus, Sliders
 } from 'lucide-react';
 import { ChatMessage, AgentAction, HostMachine, ChatSession } from '../types';
 import { pcmToBase64, playAudioChunk, stopAllPlayerAudio } from '../lib/audio_helper';
@@ -41,7 +41,7 @@ export default function VoiceAgent({
 }: VoiceAgentProps) {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false); // Default to false (off) as requested by user
   const [loading, setLoading] = useState(false);
   const [expandedTrace, setExpandedTrace] = useState<Record<string, boolean>>({});
   
@@ -62,8 +62,17 @@ export default function VoiceAgent({
   // Audio Transcription Recording State (gemini-3.5-flash)
   const [isRecordingTranscription, setIsRecordingTranscription] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Web Speech Customization Options
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceName, setSelectedVoiceName] = useState<string>('');
+  const [voiceRate, setVoiceRate] = useState<number>(1.05);
+  const [voicePitch, setVoicePitch] = useState<number>(1.0);
+  const [voiceVolume, setVoiceVolume] = useState<number>(1.0);
+  const [showVoiceSettings, setShowVoiceSettings] = useState<boolean>(false);
 
   // Web Speech API fallback refs
   const recognitionRef = useRef<any>(null);
@@ -115,22 +124,55 @@ export default function VoiceAgent({
     };
   }, []);
 
+  // Sync available browser voices dynamically
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const loadVoices = () => {
+        const available = window.speechSynthesis.getVoices();
+        setVoices(available);
+        if (available.length > 0 && !selectedVoiceName) {
+          const defaultVoice = available.find(v => 
+            v.name.includes('Google US English') || 
+            v.name.includes('Samantha') || 
+            v.name.includes('Microsoft David') ||
+            v.lang.startsWith('en')
+          ) || available[0];
+          setSelectedVoiceName(defaultVoice?.name || '');
+        }
+      };
+
+      loadVoices();
+      if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+      }
+    }
+  }, [selectedVoiceName]);
+
   // Convert AI response to Speech Synthesis (For text chat)
-  const speakOutput = (text: string) => {
-    if (!isVoiceEnabled || typeof window === 'undefined' || isLiveActive) return;
+  const speakOutput = (text: string, force: boolean = false) => {
+    const shouldSpeak = force || isVoiceEnabled;
+    if (!shouldSpeak || typeof window === 'undefined' || isLiveActive) return;
 
     const cleanText = text
       .replace(/[*#`_\-]/g, '')
       .replace(/\[.*?\]\(.*?\)/g, '')
-      .substring(0, 250); // safety length cap
+      .substring(0, 350); // safety length cap for playback
 
-    window.speechSynthesis.cancel(); // kill legacy queue
+    window.speechSynthesis.cancel(); // kill active queue
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(v => v.name.includes('Google US English') || v.name.includes('Samantha') || v.lang.startsWith('en'));
-    if (preferredVoice) utterance.voice = preferredVoice;
     
-    utterance.rate = 1.05;
+    const foundVoice = voices.find(v => v.name === selectedVoiceName);
+    if (foundVoice) {
+      utterance.voice = foundVoice;
+    } else {
+      const fallbackVoice = voices.find(v => v.lang.startsWith('en'));
+      if (fallbackVoice) utterance.voice = fallbackVoice;
+    }
+    
+    utterance.rate = voiceRate;
+    utterance.pitch = voicePitch;
+    utterance.volume = voiceVolume;
+
     window.speechSynthesis.speak(utterance);
   };
 
@@ -359,6 +401,7 @@ export default function VoiceAgent({
   const handleSubmitMessage = async (queryText: string) => {
     setInputText('');
     setLoading(true);
+    setApiKeyError(null);
 
     const userMessage: Omit<ChatMessage, 'id'> = {
       sender: 'user',
@@ -431,9 +474,42 @@ export default function VoiceAgent({
       }
 
     } catch (error: any) {
+      let displayError = error.message || 'Connecting failure inside ReAct controller.';
+      
+      // Gracefully parse JSON-like errors to prevent raw dumps in chat
+      if (typeof displayError === 'string') {
+        const jsonMatch = displayError.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const parsedObj = JSON.parse(jsonMatch[0]);
+            const extractMsg = parsedObj.error?.message || parsedObj.message;
+            if (extractMsg) {
+              displayError = `⚠️ Agent Dispatch Error: ${extractMsg}`;
+            } else {
+              displayError = `⚠️ Agent Dispatch Error: ${JSON.stringify(parsedObj, null, 2)}`;
+            }
+          } catch {
+            displayError = `⚠️ Agent Dispatch Error: ${displayError}`;
+          }
+        } else {
+          displayError = `⚠️ Agent Dispatch Error: ${displayError}`;
+        }
+      } else {
+        displayError = `⚠️ Agent Dispatch Error: ${String(displayError)}`;
+      }
+
+      if (
+        displayError.toLowerCase().includes('api key') || 
+        displayError.toLowerCase().includes('api_key') || 
+        displayError.toLowerCase().includes('expired') || 
+        displayError.toLowerCase().includes('invalid_argument')
+      ) {
+        setApiKeyError(displayError);
+      }
+
       await onAddMessage({
         sender: 'system',
-        text: `⚠️ Agent Dispatch Error: ${error.message || 'Connecting failure inside ReAct controller.'}`,
+        text: displayError,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       });
     } finally {
@@ -595,7 +671,7 @@ export default function VoiceAgent({
           {/* Speaker toggle */}
           <button
             onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
-            title={isVoiceEnabled ? 'Mute speech output' : 'Enable speech output'}
+            title={isVoiceEnabled ? 'Auto-speak responses: ACTIVE' : 'Auto-speak responses: INACTIVE (Default)'}
             className={`p-1.5 rounded-none border transition-all ${
               isVoiceEnabled
                 ? 'bg-[#0f62fe]/10 border-[#0f62fe] text-[#78a9ff]'
@@ -603,6 +679,19 @@ export default function VoiceAgent({
             }`}
           >
             {isVoiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </button>
+
+          {/* Voice Settings customizer toggle option */}
+          <button
+            onClick={() => setShowVoiceSettings(!showVoiceSettings)}
+            title="Speech Synthesis Voice & Parameter Customizer"
+            className={`p-1.5 rounded-none border transition-all ${
+              showVoiceSettings
+                ? 'bg-[#161616] border-[#0f62fe] text-[#78a9ff]'
+                : 'bg-[#161616] border-[#393939] text-[#8d8d8d] hover:text-[#e0e0e0]'
+            }`}
+          >
+            <Sliders className="h-4 w-4" />
           </button>
 
           {/* Clear chats thread cache */}
@@ -616,11 +705,162 @@ export default function VoiceAgent({
         </div>
       </div>
 
+      {/* Voice Parameter Customizer Drawer Panel */}
+      {showVoiceSettings && (
+        <div className="bg-[#1e1e1e] border-b border-[#393939] p-4.5 font-mono text-xs text-[#c6c6c6] space-y-4 animate-fade-in select-none">
+          <div className="flex items-center justify-between border-b border-[#393939] pb-2">
+            <span className="text-[#78a9ff] font-bold uppercase tracking-wider flex items-center gap-2">
+              <Sliders className="h-4 w-4 text-[#0f62fe]" />
+              SPEECH_SETTINGS_CALIBRATOR
+            </span>
+            <button 
+              onClick={() => setShowVoiceSettings(false)}
+              className="text-[#8d8d8d] hover:text-white uppercase text-[10px] cursor-pointer"
+            >
+              [CLOSE_PANEL]
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Voice Dropdown Selector */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] text-[#8d8d8d] font-bold uppercase tracking-wider block">VOICE ENGINE MODULE</label>
+              <select
+                value={selectedVoiceName}
+                onChange={(e) => {
+                  setSelectedVoiceName(e.target.value);
+                  setTimeout(() => {
+                    const utterance = new SpeechSynthesisUtterance("Voice configured.");
+                    const found = window.speechSynthesis.getVoices().find(v => v.name === e.target.value);
+                    if (found) utterance.voice = found;
+                    utterance.rate = voiceRate;
+                    utterance.pitch = voicePitch;
+                    utterance.volume = voiceVolume;
+                    window.speechSynthesis.cancel();
+                    window.speechSynthesis.speak(utterance);
+                  }, 150);
+                }}
+                className="w-full bg-[#161616] border border-[#393939] text-[#e0e0e0] font-sans px-2.5 py-1.5 text-xs rounded-none focus:outline-none focus:border-[#0f62fe] cursor-pointer"
+              >
+                {voices.length === 0 ? (
+                  <option>Detecting browser speech engines...</option>
+                ) : (
+                  voices.map((v) => (
+                    <option key={v.name} value={v.name}>
+                      {v.name} ({v.lang})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            {/* Slider Parameters */}
+            <div className="space-y-3">
+              {/* Pitch */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-[#8d8d8d]">
+                  <span className="font-bold uppercase">Pitch Frequency</span>
+                  <span className="text-white font-mono">{voicePitch.toFixed(1)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1.5"
+                  step="0.1"
+                  value={voicePitch}
+                  onChange={(e) => setVoicePitch(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-[#161616] border-none appearance-none cursor-pointer accent-[#0f62fe]"
+                />
+              </div>
+
+              {/* Rate */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-[#8d8d8d]">
+                  <span className="font-bold uppercase">Speed / Velocity</span>
+                  <span className="text-white font-mono">{voiceRate.toFixed(2)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.05"
+                  value={voiceRate}
+                  onChange={(e) => setVoiceRate(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-[#161616] border-none appearance-none cursor-pointer accent-[#0f62fe]"
+                />
+              </div>
+
+              {/* Volume */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-[#8d8d8d]">
+                  <span className="font-bold uppercase">Volume Intensity</span>
+                  <span className="text-white font-mono">{(voiceVolume * 100).toFixed(0)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={voiceVolume}
+                  onChange={(e) => setVoiceVolume(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-[#161616] border-none appearance-none cursor-pointer accent-[#0f62fe]"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 border-t border-[#393939] pt-3.5 text-[10px] text-[#8d8d8d]">
+            <label className="flex items-center gap-2 cursor-pointer hover:text-white transition-all">
+              <input
+                type="checkbox"
+                checked={isVoiceEnabled}
+                onChange={(e) => setIsVoiceEnabled(e.target.checked)}
+                className="rounded-none border-[#393939] bg-[#161616] text-[#0f62fe] focus:ring-0 cursor-pointer h-3.5 w-3.5 accent-[#0f62fe]"
+              />
+              <span className="font-mono uppercase font-bold text-[#e0e0e0]">Auto-read answers aloud</span>
+            </label>
+            <span>|</span>
+            <button
+              onClick={() => speakOutput("Test audio parameters connection diagnostics active.", true)}
+              className="text-[#78a9ff] font-bold hover:underline uppercase cursor-pointer"
+            >
+              [TEST_VOICE_MODULE]
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Connection / Live status Banner */}
       {liveError && (
         <div className="bg-[#da1e28]/10 border-b border-[#da1e28]/35 px-4 py-2 flex items-center gap-2 text-xs font-mono text-[#ffb3b8]">
           <AlertCircle className="h-4 w-4 text-[#da1e28] shrink-0" />
           <span className="truncate">{liveError}</span>
+        </div>
+      )}
+
+      {apiKeyError && (
+        <div className="bg-[#f1c21b]/10 border-b border-[#f1c21b]/35 px-4 py-3 text-xs font-mono text-[#fcd34d] space-y-2 animate-fade-in">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="h-4.5 w-4.5 text-[#f1c21b] shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-bold uppercase tracking-wider block text-white">⚠️ API KEY RENEWAL SUGGESTED</span>
+              <p className="text-[11px] text-[#c6c6c6] leading-relaxed">
+                Your current Gemini API Key appears expired or invalid. Please check your credentials or enter your own permanent Gemini API Key inside the <span className="text-[#78a9ff] font-bold">SYSTEM_CONFIG</span> tab override to continue unhindered.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5 pl-7 pt-0.5">
+            <a 
+              href="https://aistudio.google.com/" 
+              target="_blank" 
+              rel="noreferrer"
+              className="text-[#78a9ff] hover:underline hover:text-white font-bold text-[10px] uppercase tracking-wider flex items-center gap-1"
+            >
+              Get Free Gemini Key ↗
+            </a>
+            <span className="text-[#393939]">|</span>
+            <span className="text-[#8d8d8d] text-[10px]">Verify your .env or shared sandbox environment parameters.</span>
+          </div>
         </div>
       )}
 
@@ -632,7 +872,7 @@ export default function VoiceAgent({
       )}
 
       {/* Message List */}
-      <div id="chats-body" className="flex-1 p-4 overflow-y-auto space-y-4 max-h-[300px] min-h-[220px] bg-[#1c1c1c] leading-relaxed scrollbar-thin">
+      <div id="chats-body" className="flex-1 p-4 overflow-y-auto space-y-4 min-h-[220px] bg-[#1c1c1c] leading-relaxed scrollbar-thin">
         
         {/* Holographic Glowing live visualizer when active */}
         {isLiveActive ? (
@@ -673,8 +913,8 @@ export default function VoiceAgent({
             </div>
 
             {/* Bubble */}
-            <div className={`flex flex-col gap-1 max-w-[80%] ${m.sender === 'user' ? 'items-end' : ''}`}>
-              <div className={`p-3 rounded-none border leading-relaxed text-[12px] font-sans ${
+            <div className={`flex flex-col gap-1.5 max-w-[80%] ${m.sender === 'user' ? 'items-end' : ''}`}>
+              <div className={`p-3 rounded-none border leading-relaxed text-[12px] font-sans break-words whitespace-pre-wrap [word-break:break-word] ${
                 m.sender === 'user'
                   ? 'bg-[#393939] border-[#4d4d4d] text-white'
                   : m.sender === 'system'
@@ -683,6 +923,29 @@ export default function VoiceAgent({
               }`}>
                 {m.text}
               </div>
+
+              {m.sender !== 'user' && (
+                <div className="flex items-center gap-1.5 px-0.5 justify-start">
+                  <button
+                    onClick={() => speakOutput(m.text, true)}
+                    className="text-[9.5px] font-mono text-[#8d8d8d] hover:text-[#78a9ff] transition-all flex items-center gap-1 cursor-pointer py-1 px-2 bg-[#1e1e1e] border border-[#393939] uppercase tracking-wider leading-none"
+                    title="Speak this answer aloud"
+                  >
+                    <Volume2 className="h-3 w-3" />
+                    <span>Speak Response</span>
+                  </button>
+                  {window.speechSynthesis.speaking && (
+                    <button
+                      onClick={() => window.speechSynthesis.cancel()}
+                      className="text-[9.5px] font-mono text-[#ff8389] hover:text-white transition-all flex items-center gap-1 cursor-pointer py-1 px-2 bg-[#1e1e1e] border border-[#393939] uppercase tracking-wider leading-none font-bold"
+                      title="Stop speaking"
+                    >
+                      <VolumeX className="h-3 w-3" />
+                      <span>Stop Playback</span>
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* ReAct Trace Actions */}
               {m.actions && m.actions.length > 0 && (
