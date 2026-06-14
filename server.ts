@@ -825,6 +825,41 @@ app.post("/api/ssh/execute", async (req, res) => {
   res.json(result);
 });
 
+// Formatting helper for LLM/Gemini API errors to avoid verbose or JSON-like dump leakage in UI
+function formatLLMError(error: any): string {
+  if (!error) return "An unknown error occurred inside the agent.";
+  const errMsg = error.message || String(error);
+  
+  if (typeof errMsg === "string") {
+    // Detect standard API key expired or invalid
+    if (errMsg.toLowerCase().includes("api key") || errMsg.toLowerCase().includes("api_key") || errMsg.toLowerCase().includes("invalid_argument")) {
+      if (errMsg.toLowerCase().includes("expired")) {
+        return "⚠️ Gemini API key has expired. Please renew your API key in the SYSTEM_CONFIG dashboard tab.";
+      }
+      if (errMsg.toLowerCase().includes("invalid") || errMsg.toLowerCase().includes("not found")) {
+        return "⚠️ Invalid Gemini API key. Please check your credentials in the SYSTEM_CONFIG dashboard tab.";
+      }
+    }
+    
+    // Attempt parsing in case of JSON stringified error inside the message
+    const match = errMsg.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (parsed.error && typeof parsed.error.message === "string") {
+          return `⚠️ Agent Dispatch Error: ${parsed.error.message}`;
+        }
+        if (typeof parsed.message === "string") {
+          return `⚠️ Agent Dispatch Error: ${parsed.message}`;
+        }
+      } catch {
+        // Fall back to original clean message
+      }
+    }
+  }
+  return `⚠️ Agent Dispatch Error: ${errMsg}`;
+}
+
 // Independent LLM Agent Chat Logic (Multi-step reasoning engine)
 app.post("/api/agent/chat", async (req, res) => {
   try {
@@ -1078,7 +1113,7 @@ CRITICAL: ONLY respond with the raw JSON object itself in your text response. Do
   } catch (error: any) {
     console.error("Error in AI Agent Loop:", error);
     res.status(500).json({
-      error: error.message || "An exception occurred inside the server Agent ReAct processing controller."
+      error: formatLLMError(error)
     });
   }
 });
@@ -1117,7 +1152,7 @@ app.post("/api/transcribe", async (req, res) => {
     res.json({ text: response.text || "" });
   } catch (e: any) {
     console.error("Transcription error:", e);
-    res.status(500).json({ error: e.message || "Failed to transcribe audio stream" });
+    res.status(500).json({ error: formatLLMError(e) });
   }
 });
 
@@ -1161,7 +1196,7 @@ Keep the advice highly practical, brief, action-oriented, and perfectly styled i
     res.json({ text: response.text || "Failed to generate diagnostic evaluation" });
   } catch (e: any) {
     console.error("Diagnostic intelligence analysis failed:", e);
-    res.status(500).json({ error: e.message || "Diagnostic evaluation exception" });
+    res.status(500).json({ error: formatLLMError(e) });
   }
 });
 
@@ -1209,7 +1244,7 @@ Available Hosts: ${JSON.stringify(hostMetadata)}`;
     // Expose webhook format
     res.type("text/xml").send(`<Response><Message>${finalAnswer}</Message></Response>`);
   } catch (e: any) {
-    res.type("text/xml").send(`<Response><Message>SSH Agent Error: ${e.message}</Message></Response>`);
+    res.type("text/xml").send(`<Response><Message>SSH Agent Error: ${formatLLMError(e)}</Message></Response>`);
   }
 });
 
