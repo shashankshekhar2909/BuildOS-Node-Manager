@@ -62,4 +62,18 @@ Below is a detailed breakdown of the complete roadmap, design adjustments, and c
 ### 3. Isolated Full Height Speech/Conversation AI Chat Page
 *   **Expanded Experience**: Allocated wide, unrestricted flex layouts for the voice/speech generative terminal to function as a standalone messaging application.
 
+---
+
+## 💎 New Milestone: Multi-System Targeted Chat Channels & Speech Synthesis Calibrator (v1.8.0)
+
+### 1. Multi-System targeted chat networks (Omni-Channel)
+*   **Target Channels Sidebar**: Created a multi-system choice checklist in the chat module. Users can select any combination of registered host systems (including all-target Omni Channel) to guide the session logic.
+*   **Reasoning Orchestrator Context**: The backend multi-step reasoning AI system identifies and targets multiple concurrent nodes, allowing users to invoke automated comparative actions, audit configurations across machines, and receive consolidated comparison answers.
+
+### 2. Speech Synthesis Calibrator & Voice Control Hardening
+*   **Speech Customization Module**: Integrated a custom togglable setting panel (`SPEECH_SETTINGS_CALIBRATOR`) enabling precise fine-tuning of Speech Synthesis engines.
+*   **Dynamic Customization Parameters**: Allows real-time adjusting of Voice pitch, Speed velocity rates, Volume intensities, and selection from available local browser-specific speech voices (e.g. Google US English, Samantha, Microsoft David).
+*   **No Auto-read Audio Control**: Defaulted auto-read answers to INACTIVE/false, with standalone manual "Speak Response" triggers on individual bubbles so audio only plays on explicit action or when full Auto-read is checked by choice.
+
+
 

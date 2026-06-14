@@ -24,10 +24,11 @@ Here are four major focus directions that can expand BuildOS Node Commander's op
     *   Extend `/src/components/NodeMonitor.tsx` to display daily, weekly, or monthly performance analysis graphs instead of only immediate real-time stats.
 
 ### 2. Multi-Host Command Orchestration & Script Library
-*   **Goal**: Run critical scripts across multiple remote nodes in parallel.
-*   **Implementation Strategy**:
-    *   Add a **Script Store Manager** collection in Firestore to write and preserve reusable command snippets (e.g. `System Clean (Log rotation)`, `Docker Prune`, `UFW Firewall Lockdown`).
-    *   Implement checkbox selection in the main dashboard grid, allowing admins to highlight 3-4 machines at once, and dispatch a script to all of them with a consolidated output panel.
+*   **Goal**: Run critical scripts or compare details across multiple remote nodes.
+*   **Status**: **PARTIALLY INITIATED (v1.8.0)** — Implemented conversation-level multi-host targeting (Omni-Channel Selection matrix in conversational terminal) allowing automated comparative commands execution in sequence.
+*   **Future Roadmap**:
+    *   Add a **Script Store Manager** collection in Firestore to write and preserve reusable command snippets.
+    *   Allow users to select checkbox targets in the main nodes grid list, dispatch a script to all of them, and display a consolidated visual log console output.
 
 ### 3. Native Slack / Discord Alerting Webhooks
 *   **Goal**: Alert administrators of node service failures, container exits, or excessive RAM load.
