@@ -1,0 +1,6 @@
+{
+  "name": "BuildOS Node Commander",
+  "description": "Voice status dashboard and AI assistant displaying stats, port scanner information, and docker containers via real SSH or virtualized local terminal engines.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
