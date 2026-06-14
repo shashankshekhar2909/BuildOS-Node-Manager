@@ -817,12 +817,23 @@ export default function App() {
             {isMobileNavOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
           </button>
 
-          <div className="p-1.5 bg-[#0f62fe] text-white rounded-none shrink-0 hidden sm:block">
+          <div
+            className={`p-1.5 text-white rounded-none shrink-0 hidden sm:block ${isGuestMode ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+            style={{ background: isGuestMode ? 'linear-gradient(135deg,#6366f1,#0f62fe)' : '#0f62fe' }}
+            onClick={isGuestMode ? () => { setIsGuestMode(false); setShowHomePage(true); } : undefined}
+            title={isGuestMode ? 'Back to homepage' : undefined}
+          >
             <Bot className="h-4 w-4" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="font-semibold text-[13px] text-white font-sans select-none tracking-tight">BuildOS Node Commander</h1>
+              <h1
+                className={`font-semibold text-[13px] text-white font-sans tracking-tight ${isGuestMode ? 'cursor-pointer hover:text-[#818cf8] transition-colors' : 'select-none'}`}
+                onClick={isGuestMode ? () => { setIsGuestMode(false); setShowHomePage(true); } : undefined}
+                title={isGuestMode ? 'Back to homepage' : undefined}
+              >
+                BuildOS Node Commander
+              </h1>
               <span className="bg-[#0f62fe]/15 text-[#78a9ff] font-mono text-[9px] px-2 py-0.5 border border-[#0f62fe]/30">
                 v1.6.5
               </span>
@@ -843,6 +854,16 @@ export default function App() {
 
         {/* Global Action items */}
         <div className="flex items-center gap-2.5">
+          {/* Back to homepage — sandbox mode only */}
+          {isGuestMode && (
+            <button
+              onClick={() => { setIsGuestMode(false); setShowHomePage(true); }}
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 border border-[#6366f1]/40 bg-[#6366f1]/10 text-[#818cf8] hover:bg-[#6366f1]/20 hover:text-white font-mono text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+              title="Back to feature overview"
+            >
+              ← Features
+            </button>
+          )}
           {/* UTC Real-time Clock */}
           <div className="hidden md:flex flex-col text-right pr-3 border-r border-[#393939]">
             <span className="text-[10px] font-sans text-[#6f6f6f]">UTC</span>
