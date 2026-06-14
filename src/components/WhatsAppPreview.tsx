@@ -96,7 +96,7 @@ export default function WhatsAppPreview() {
         </div>
 
         <p className="text-xs text-[#c6c6c6] leading-relaxed">
-          The Hermes dashboard exposes a Twilio-compliant webhook endpoint. You can bind a Twilio WhatsApp phone number to this backend to interact with remote host nodes via instant message queries.
+          The BuildOS dashboard exposes a Twilio-compliant webhook endpoint. You can bind a Twilio WhatsApp phone number to this backend to interact with remote host nodes via instant message queries.
         </p>
 
         {/* Copy Callback Box */}

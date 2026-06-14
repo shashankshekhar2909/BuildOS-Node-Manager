@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Rounded carbon steel dark background grid block -->
+  <rect width="32" height="32" rx="4" fill="#161616" />
+  
+  <!-- Server Node Circle Connections -->
+  <circle cx="16" cy="11" r="2.5" fill="#0f62fe" />
+  <circle cx="9" cy="21" r="2" fill="#78a9ff" />
+  <circle cx="23" cy="21" r="2" fill="#78a9ff" />
+  
+  <!-- Network Interconnection Edge Lines -->
+  <path d="M16 13.5 L10.5 19.5" stroke="#78a9ff" stroke-width="1.2" stroke-linecap="round" />
+  <path d="M16 13.5 L21.5 19.5" stroke="#78a9ff" stroke-width="1.2" stroke-linecap="round" />
+  <path d="M11 21 L21 21" stroke="#393939" stroke-width="1" stroke-dasharray="1 1" />
+  
+  <!-- Pulsing Active Indicator -->
+  <span xmlns="http://www.w3.org/1999/xhtml">
+    <circle cx="16" cy="11" r="4.5" stroke="#78a9ff" stroke-width="0.75" opacity="0.6">
+      <animate attributeName="r" values="2.5;6;2.5" dur="3s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.8;0;0.8" dur="3s" repeatCount="indefinite" />
+    </circle>
+  </span>
+</svg>

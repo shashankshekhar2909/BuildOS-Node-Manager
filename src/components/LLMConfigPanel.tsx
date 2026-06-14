@@ -84,7 +84,7 @@ export default function LLMConfigPanel({ onSaved }: LLMConfigPanelProps) {
       </div>
       
       <p className="text-xs text-[#c6c6c6] leading-relaxed">
-        The Hermes SSH System orchestrates actions across remote node host machines. Configure the provider backend engine parameter variables below. All environment configurations are handled securely.
+        The BuildOS SSH System orchestrates actions across remote node host machines. Configure the provider backend engine parameter variables below. All environment configurations are handled securely.
       </p>
 
       <form onSubmit={handleSave} className="space-y-4">
