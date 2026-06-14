@@ -78,6 +78,23 @@ export default function VoiceAgent({
   const recognitionRef = useRef<any>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
+  // Selected systems/hosts to target in chat
+  const [selectedHostIds, setSelectedHostIds] = useState<string[]>([]);
+
+  // Autosync selected hosts from activeHostId when changing nodes
+  useEffect(() => {
+    if (activeHostId) {
+      setSelectedHostIds((prev) => {
+        if (!prev.includes(activeHostId)) {
+          return [...prev, activeHostId];
+        }
+        return prev;
+      });
+    } else if (hosts.length > 0 && selectedHostIds.length === 0) {
+      setSelectedHostIds([hosts[0].id]);
+    }
+  }, [activeHostId, hosts]);
+
   useEffect(() => {
     // Scroll chats to bottom
     if (chatBottomRef.current) {
@@ -422,6 +439,7 @@ export default function VoiceAgent({
           chatHistory: messages.slice(-10), // provide last 10 dialogues
           activeHostId,
           hosts,
+          selectedHostIds,
           modelMode, // Passes 'pro', 'flash', or 'lite' to implement correct backend resolution and low-latency
           currentUserRole
         })
@@ -570,7 +588,88 @@ export default function VoiceAgent({
           })}
         </div>
 
-        <div className="p-3.5 border-t border-[#393939] bg-[#1a1a1a] flex items-center justify-between gap-2.5">
+        {/* TARGET SYSTEMS MATRIX (MULTIPLICITY CHANNEL) */}
+        <div className="p-3 border-t border-[#393939] bg-[#161616] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Cpu className="h-3.5 w-3.5 text-[#0f62fe]" />
+            <span className="font-bold text-[10px] text-slate-300 uppercase tracking-wider">TARGET CHANNELS</span>
+          </div>
+          <span className="text-[9px] bg-[#0f62fe] text-white px-1.5 py-0.5 font-bold font-mono">
+            {selectedHostIds.length}/{hosts.length} IN ROOM
+          </span>
+        </div>
+
+        <div className="p-2 bg-[#1a1a1a] border-b border-[#393939] flex items-center justify-between">
+          <label className="flex items-center gap-2 cursor-pointer text-[#8d8d8d] hover:text-white transition-all text-[9px] font-bold uppercase select-none">
+            <input
+              type="checkbox"
+              checked={selectedHostIds.length === hosts.length && hosts.length > 0}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setSelectedHostIds(hosts.map(h => h.id));
+                } else {
+                  setSelectedHostIds([]);
+                }
+              }}
+              className="rounded-none border-[#393939] bg-[#161616] text-[#0f62fe] h-3 w-3 accent-[#0f62fe]"
+            />
+            <span>Omni Channel (Target All)</span>
+          </label>
+        </div>
+
+        <div className="overflow-y-auto p-1.5 space-y-1 max-h-[180px] scrollbar-thin bg-[#1e1e1e]/20 border-b border-[#393939]">
+          {hosts.map((host) => {
+            const isTargeted = selectedHostIds.includes(host.id);
+            const isActiveNode = activeHostId === host.id;
+            return (
+              <div
+                key={host.id}
+                onClick={() => {
+                  setSelectedHostIds(prev => 
+                    prev.includes(host.id) 
+                      ? prev.filter(id => id !== host.id) 
+                      : [...prev, host.id]
+                  );
+                }}
+                className={`group flex items-center justify-between p-1.5 cursor-pointer transition-all border ${
+                  isTargeted 
+                    ? 'bg-[#161616]/90 border-[#0f62fe]/60 text-white' 
+                    : 'bg-transparent border-transparent text-[#8d8d8d] hover:text-[#e0e0e0] hover:bg-[#161616]/40'
+                }`}
+              >
+                <div className="flex items-center gap-2 truncate">
+                  <input
+                    type="checkbox"
+                    checked={isTargeted}
+                    readOnly
+                    className="rounded-none border-[#393939] bg-[#161616] text-[#0f62fe] z-10 pointer-events-none h-3 w-3 accent-[#0f62fe]"
+                  />
+                  <div className="flex flex-col truncate leading-tight">
+                    <span className="text-[10px] font-bold uppercase tracking-wide truncate flex items-center gap-1.5">
+                      {host.name}
+                      {isActiveNode && (
+                        <span className="bg-[#0f62fe] text-white text-[7.5px] px-1 font-bold rounded-none uppercase leading-none py-0.25">
+                          ACTIVE
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[8.5px] text-[#6f6f6f] font-mono leading-none">{host.ip}</span>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-1.5 font-mono">
+                  {host.isSimulated ? (
+                    <span className="h-1.5 w-1.5 rounded-none bg-[#42be65]" title="Simulated Docker Instance" />
+                  ) : (
+                    <span className="h-1.5 w-1.5 rounded-none bg-[#0f62fe]" title="Real SSH Server Connectivity Active" />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-3.5 bg-[#1a1a1a] flex items-center justify-between gap-2.5">
           <span className="text-[9px] text-[#8d8d8d] uppercase tracking-wider block">CLOUD_HANDSHAKE</span>
           <button
             onClick={onClearMessages}

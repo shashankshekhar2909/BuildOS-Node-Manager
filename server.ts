@@ -863,7 +863,7 @@ function formatLLMError(error: any): string {
 // Independent LLM Agent Chat Logic (Multi-step reasoning engine)
 app.post("/api/agent/chat", async (req, res) => {
   try {
-    const { message, chatHistory = [], activeHostId, hosts: clientHosts, modelMode, currentUserRole } = req.body;
+    const { message, chatHistory = [], activeHostId, hosts: clientHosts, modelMode, currentUserRole, selectedHostIds } = req.body;
     const hosts = clientHosts || readHosts();
     const config = await getActiveConfig();
 
@@ -878,6 +878,10 @@ app.post("/api/agent/chat", async (req, res) => {
       stats: h.isSimulated ? h.simulatedStats : "Requires execution of df/free/uptime/docker commands to fetch real stats"
     }));
 
+    // Find custom named targets
+    const selectedHostObjects = (selectedHostIds || []).map((id: string) => hosts.find(h => h.id === id)).filter(Boolean);
+    const selectedHostNames = selectedHostObjects.map((h: any) => h.name).join(", ") || "None requested explicitly";
+
     const systemInstruction = `You are an AI SSH Hosting Agent. You operate servers for the user.
 Your interface supports voice (TTS reads your reply text) and standard text. Keep your text friendly, objective, scannable, and helpful.
 
@@ -885,12 +889,15 @@ Available Hosts:
 ${JSON.stringify(hostMetadata, null, 2)}
 
 Active Host Selected in UI: ${activeHostId || "None"}
+Explicitly Targeted/Selected Systems for this Chat Session: ${selectedHostNames} (Total: ${selectedHostObjects.length})
 
 To perform your job, you can execute SSH shell commands on any of the registered hosts above!
 You operates in a Reasoning & Action (ReAct) cycle. 
 
 If you need to query or verify stats, read files, or check running docker containers, you must output a special JSON action.
 The server will capture this action, run the command on the target host (real SSH or simulated), and feed the output back to you so you can decide your next action or reply.
+
+If multiple systems are targeted, you should formulate consecutive 'ssh_exec' instructions to gather information across all of them (one after another) before presenting your final comparative analysis reply!
 
 Format your responses MUST be valid JSON matching EXACTLY one of these two schemas:
 
