@@ -32,6 +32,7 @@ import AddHostModal from './components/AddHostModal';
 import UserManagementPanel from './components/UserManagementPanel';
 import NodeMonitor from './components/NodeMonitor';
 import NodeDetailsPage from './components/NodeDetailsPage';
+import HomePage from './components/HomePage';
 
 // Firebase operations
 import { auth, loginWithGoogle, logoutUser } from './lib/firebase';
@@ -83,6 +84,12 @@ export default function App() {
     return VALID_TABS.includes(hash) ? hash : 'fleet';
   });
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+
+  // Homepage: show by default unless user lands on a direct tab hash
+  const [showHomePage, setShowHomePage] = useState(() => {
+    const hash = window.location.hash.replace('#', '').split('/')[0];
+    return !VALID_TABS.includes(hash as AppTab);
+  });
 
   // Hash-based routing: sync URL → state on browser back/forward
   useEffect(() => {
@@ -643,6 +650,16 @@ export default function App() {
           <p className="text-[10px] text-[#8d8d8d] mt-2">CHECKING GOOGLE FIREBASE SECURITY HANDSHAKE STATE...</p>
         </div>
       </div>
+    );
+  }
+
+  // Render feature showcase homepage (default route for unauthenticated fresh visits)
+  if (!currentUser && !isGuestMode && showHomePage) {
+    return (
+      <HomePage
+        onSignIn={() => setShowHomePage(false)}
+        onSandbox={() => { setShowHomePage(false); setIsGuestMode(true); }}
+      />
     );
   }
 
