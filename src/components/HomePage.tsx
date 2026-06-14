@@ -25,6 +25,7 @@ const features = [
     icon: Server,
     title: 'SSH Fleet Command',
     description: 'Connect unlimited remote Linux servers. Real-time host health, port status, and uptime at a glance.',
+    detail: 'Uses the ssh2 Node.js library for real SSH tunnel streams. Credentials stored AES-256-CBC encrypted. Hosts persisted in Firestore for cross-device access.',
     color: '#0f62fe',
     bg: 'rgba(15,98,254,0.10)',
     border: 'rgba(15,98,254,0.28)',
@@ -35,6 +36,7 @@ const features = [
     icon: Cpu,
     title: 'Live Telemetry',
     description: 'CPU, RAM, and disk polled every 30s for physical hosts. Persistent historical charts per node.',
+    detail: 'Runs top, free, df, ss over SSH on each physical host. Results written back to host state and rendered with Recharts sparklines in the Node Monitor.',
     color: '#24a148',
     bg: 'rgba(36,161,72,0.10)',
     border: 'rgba(36,161,72,0.28)',
@@ -45,6 +47,7 @@ const features = [
     icon: Bot,
     title: 'AI ReAct Agent',
     description: 'Ask natural-language questions. The agent translates intent to SSH commands, executes, and explains results.',
+    detail: 'Implements a ReAct (Reasoning + Action) loop with Gemini 2.0 Flash or Groq. LLM outputs JSON {action, command}, server executes via SSH, feeds output back — repeats until final answer.',
     color: '#6366f1',
     bg: 'rgba(99,102,241,0.10)',
     border: 'rgba(99,102,241,0.28)',
@@ -55,6 +58,7 @@ const features = [
     icon: Terminal,
     title: 'Docker Management',
     description: 'List, start, stop, and restart containers per host. Live status with port mappings — no CLI needed.',
+    detail: 'Runs docker ps --format json over SSH, parses container state and port bindings, then exposes start/stop/restart actions as single-click API calls per container ID.',
     color: '#ee5396',
     bg: 'rgba(238,83,150,0.10)',
     border: 'rgba(238,83,150,0.28)',
@@ -65,6 +69,7 @@ const features = [
     icon: Box,
     title: 'ProxMox LXC',
     description: 'Chain into ProxMox — list LXC containers, manage Docker inside each via pct exec. Full nesting support.',
+    detail: 'SSH into the ProxMox host → pct list → pct exec <CTID> -- docker ps. Expandable LXC rows in the Node Monitor tab; start/stop for both LXC and the Docker containers inside.',
     color: '#f1c21b',
     bg: 'rgba(241,194,27,0.10)',
     border: 'rgba(241,194,27,0.28)',
@@ -75,6 +80,7 @@ const features = [
     icon: Mic,
     title: 'Voice Interface',
     description: 'Calibrated speech recognition for voice-driven SSH queries. Speak to your fleet.',
+    detail: 'Uses the Web Speech API with a calibration flow that tunes silence threshold and noise floor. Voice input feeds directly into the AI agent pipeline.',
     color: '#ff7eb6',
     bg: 'rgba(255,126,182,0.10)',
     border: 'rgba(255,126,182,0.28)',
@@ -85,6 +91,7 @@ const features = [
     icon: Users,
     title: 'Multi-User Roles',
     description: 'Admin and Viewer roles via Firebase Auth. Shared fleet state synced via Firestore across all operators.',
+    detail: 'Google SSO via Firebase Authentication. Roles stored in an authorizedUsers Firestore collection. Fleet hosts and audit logs shared across all authorized operators in real time.',
     color: '#42be65',
     bg: 'rgba(66,190,101,0.10)',
     border: 'rgba(66,190,101,0.28)',
@@ -95,6 +102,7 @@ const features = [
     icon: Lock,
     title: 'AES-256 Security',
     description: 'Credentials encrypted at rest. Sandbox mode for public demos — real SSH is never exposed.',
+    detail: 'SSH passwords and private keys encrypted with AES-256-CBC before Firestore write. DEMO_MODE env var forces all SSH to simulation server-side regardless of client payload.',
     color: '#78a9ff',
     bg: 'rgba(120,169,255,0.10)',
     border: 'rgba(120,169,255,0.28)',
@@ -402,7 +410,13 @@ export default function HomePage({ onSignIn, onSandbox }: HomePageProps) {
                 <feat.icon className="h-4.5 w-4.5" style={{ color: feat.color, width: 18, height: 18 }} />
               </div>
               <h3 className="relative font-bold text-white text-sm mb-2 font-mono">{feat.title}</h3>
-              <p className="relative text-[11px] text-[#8d8d8d] leading-relaxed">{feat.description}</p>
+              <p className="relative text-[11px] text-[#8d8d8d] leading-relaxed mb-3">{feat.description}</p>
+              <p
+                className="relative text-[10px] leading-relaxed opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+                style={{ color: feat.color }}
+              >
+                {feat.detail}
+              </p>
               {/* Bottom accent line on hover */}
               <div
                 className="absolute bottom-0 left-0 h-px w-0 group-hover:w-full transition-all duration-400"
