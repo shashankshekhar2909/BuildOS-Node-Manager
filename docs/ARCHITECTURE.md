@@ -51,5 +51,26 @@ The backend is built as a unified full-stack application running on Node.js. It 
 
 ---
 
+## 🧭 Navigational Page Architecture
+
+The user interface transitioned in v1.7.0 to a persistent sidebar-docked dashboard architecture (IBM Carbon Command Rail):
+
+1. **Global Persisted Layout Frame**: The header and its multi-mode theme components stay mounted constantly.
+2. **Left-Docked Sidebar Command Rail**: Features modern enterprise grouped navigation tabs with automatic state preservation for ongoing telemetry monitoring and SSH console audits:
+    * **Fleet Registry**
+        * **Fleet Clusters**: High-level, cluster-wide hardware capacity and system averages panel.
+        * **Hardware DNA (Node Details)**: Complete comprehensive node inspection, simulating hardware specification DNA, local interfaces bandwidth, telemetry overrides, and maintenance triggers.
+    * **Operations**
+        * **Diagnostics Lab**: Fine-grained node monitoring, Systemd controller, Docker daemon toggle dashboard, and active security logs.
+        * **SMS Webhook Sim**: Webhook simulation logs and Twilio previews.
+    * **Cognitive Matrix**
+        * **AI Cognitive Chat**: A dedicated separate chat page built around conversation engines and real-time terminal auditing commands.
+    * **Governance**
+        * **System Config**: LLM model configurations and fine-tuning parameters.
+        * **Operators**: Granular operator roles and firebase security user configurations.
+
+---
+
 ## 🔌 Webhook and Twilio Gateways
 *   **Twilio WhatsApp Interface Preview**: Emulates standard Twilio-compliant messaging receiver APIs. Host machine queries can be intercepted directly in the cloud in subsequent deployments using these webhook entry controllers.
+

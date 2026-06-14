@@ -49,13 +49,31 @@ service cloud.firestore {
       }
     }
 
-    // 4. Private collections (Chats)
+    // 4. Private collections (Chats & ChatSessions, Hosts & Logs)
     match /users/{userId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId && isRegistered();
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
 
       match /chats/{chatId} {
-        allow read, write: if isSignedIn() && request.auth.uid == userId && isRegistered();
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
       }
+
+      match /chatSessions/{sessionId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+
+      match /hosts/{hostId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+
+      match /logs/{logId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    // 5. System Configuration (Server-side & Admin management)
+    match /systemConfig/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }
