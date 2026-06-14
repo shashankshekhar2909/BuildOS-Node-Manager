@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Server,
   Plus,
@@ -68,52 +69,37 @@ export default function App() {
     }
   }, [theme]);
 
-  const [hosts, setHosts] = useState<HostMachine[]>([]);
-  const [activeHostId, setActiveHostId] = useState<string | null>(() => {
-    const parts = window.location.hash.replace('#', '').split('/');
-    return parts[0] === 'node-details' && parts[1] ? parts[1] : null;
-  });
-  const [terminalLogs, setTerminalLogs] = useState<TerminalLog[]>([]);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [editingHost, setEditingHost] = useState<HostMachine | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const VALID_TABS = ['fleet', 'node-details', 'diagnostics', 'chat', 'whatsapp', 'settings', 'operators'] as const;
   type AppTab = typeof VALID_TABS[number];
 
-  const [activeTab, setActiveTab] = useState<AppTab>(() => {
-    const hash = window.location.hash.replace('#', '').split('/')[0] as AppTab;
-    return VALID_TABS.includes(hash) ? hash : 'fleet';
-  });
+  // Derive active tab and host ID from URL path
+  const pathSegments = location.pathname.replace(/^\//, '').split('/');
+  const activeTab: AppTab = VALID_TABS.includes(pathSegments[0] as AppTab) ? pathSegments[0] as AppTab : 'fleet';
+  const urlHostId = pathSegments[0] === 'node-details' && pathSegments[1] ? pathSegments[1] : null;
+
+  const [hosts, setHosts] = useState<HostMachine[]>([]);
+  const [activeHostId, setActiveHostId] = useState<string | null>(urlHostId);
+  const [terminalLogs, setTerminalLogs] = useState<TerminalLog[]>([]);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingHost, setEditingHost] = useState<HostMachine | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
-  // Homepage: show by default unless user lands on a direct tab hash
-  const [showHomePage, setShowHomePage] = useState(() => {
-    const hash = window.location.hash.replace('#', '').split('/')[0];
-    return !VALID_TABS.includes(hash as AppTab);
-  });
-
-  // Hash-based routing: sync URL → state on browser back/forward
+  // Sync URL → activeHostId on back/forward navigation
   useEffect(() => {
-    const onHashChange = () => {
-      const parts = window.location.hash.replace('#', '').split('/');
-      const tab = parts[0] as AppTab;
-      const hostId = parts[1];
-      if (VALID_TABS.includes(tab)) {
-        setActiveTab(tab);
-        if (hostId) setActiveHostId(hostId);
-      }
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+    const parts = location.pathname.replace(/^\//, '').split('/');
+    if (parts[0] === 'node-details' && parts[1]) {
+      setActiveHostId(parts[1]);
+    }
+  }, [location.pathname]);
 
-  // Hash-based routing: sync state → URL on tab/host change
+  // Update document title on route change
   useEffect(() => {
-    const hash = activeTab === 'node-details' && activeHostId
-      ? `#node-details/${activeHostId}`
-      : `#${activeTab}`;
-    window.history.replaceState(null, '', hash);
-    document.title = `BuildOS · ${activeTab.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
-  }, [activeTab, activeHostId]);
+    const segment = location.pathname.replace(/^\//, '').split('/')[0] || 'home';
+    document.title = `BuildOS · ${segment.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
+  }, [location.pathname]);
 
   // Real-time UTC Clock
   const [utcTime, setUtcTime] = useState('');
@@ -653,12 +639,12 @@ export default function App() {
     );
   }
 
-  // Render feature showcase homepage (default route for unauthenticated fresh visits)
-  if (!currentUser && !isGuestMode && showHomePage) {
+  // Render feature showcase homepage at /
+  if (!currentUser && !isGuestMode && location.pathname === '/') {
     return (
       <HomePage
-        onSignIn={() => setShowHomePage(false)}
-        onSandbox={() => { setShowHomePage(false); setIsGuestMode(true); }}
+        onSignIn={() => navigate('/fleet')}
+        onSandbox={() => { setIsGuestMode(true); navigate('/fleet'); }}
       />
     );
   }
@@ -820,7 +806,7 @@ export default function App() {
           <div
             className={`p-1.5 text-white rounded-none shrink-0 hidden sm:block ${isGuestMode ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
             style={{ background: isGuestMode ? 'linear-gradient(135deg,#6366f1,#0f62fe)' : '#0f62fe' }}
-            onClick={isGuestMode ? () => { setIsGuestMode(false); setShowHomePage(true); } : undefined}
+            onClick={isGuestMode ? () => { setIsGuestMode(false); navigate('/'); } : undefined}
             title={isGuestMode ? 'Back to homepage' : undefined}
           >
             <Bot className="h-4 w-4" />
@@ -829,7 +815,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <h1
                 className={`font-semibold text-[13px] text-white font-sans tracking-tight ${isGuestMode ? 'cursor-pointer hover:text-[#818cf8] transition-colors' : 'select-none'}`}
-                onClick={isGuestMode ? () => { setIsGuestMode(false); setShowHomePage(true); } : undefined}
+                onClick={isGuestMode ? () => { setIsGuestMode(false); navigate('/'); } : undefined}
                 title={isGuestMode ? 'Back to homepage' : undefined}
               >
                 BuildOS Node Commander
@@ -857,7 +843,7 @@ export default function App() {
           {/* Back to homepage — sandbox mode only */}
           {isGuestMode && (
             <button
-              onClick={() => { setIsGuestMode(false); setShowHomePage(true); }}
+              onClick={() => { setIsGuestMode(false); navigate('/'); }}
               className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 border border-[#6366f1]/40 bg-[#6366f1]/10 text-[#818cf8] hover:bg-[#6366f1]/20 hover:text-white font-mono text-[10px] uppercase tracking-wider transition-all cursor-pointer"
               title="Back to feature overview"
             >
@@ -942,7 +928,7 @@ export default function App() {
               <div className="space-y-px">
                 <button
                   onClick={() => {
-                    setActiveTab('fleet');
+                    navigate('/fleet');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center justify-between border-l-[3px] cursor-pointer ${
@@ -962,7 +948,7 @@ export default function App() {
 
                 <button
                   onClick={() => {
-                    setActiveTab('node-details');
+                    navigate(activeHostId ? `/node-details/${activeHostId}` : '/node-details');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center justify-between border-l-[3px] cursor-pointer ${
@@ -992,7 +978,7 @@ export default function App() {
               <div className="space-y-px">
                 <button
                   onClick={() => {
-                    setActiveTab('diagnostics');
+                    navigate('/diagnostics');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
@@ -1007,7 +993,7 @@ export default function App() {
 
                 <button
                   onClick={() => {
-                    setActiveTab('whatsapp');
+                    navigate('/whatsapp');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
@@ -1030,7 +1016,7 @@ export default function App() {
               <div className="space-y-px">
                 <button
                   onClick={() => {
-                    setActiveTab('chat');
+                    navigate('/chat');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
@@ -1053,7 +1039,7 @@ export default function App() {
               <div className="space-y-px">
                 <button
                   onClick={() => {
-                    setActiveTab('settings');
+                    navigate('/settings');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
@@ -1068,7 +1054,7 @@ export default function App() {
 
                 <button
                   onClick={() => {
-                    setActiveTab('operators');
+                    navigate('/operators');
                     setIsMobileNavOpen(false);
                   }}
                   className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
@@ -1192,7 +1178,7 @@ export default function App() {
                           isActive={activeHostId === h.id}
                           onSelect={() => {
                             setActiveHostId(h.id);
-                            setActiveTab('node-details'); // Auto-view Full Node Details Page!
+                            navigate(`/node-details/${h.id}`);
                           }}
                           onEdit={() => {
                             setEditingHost(h);
@@ -1216,7 +1202,7 @@ export default function App() {
             host={activeHost}
             hosts={hosts}
             setActiveHostId={setActiveHostId}
-            onBackToFeet={() => setActiveTab('fleet')}
+            onBackToFeet={() => navigate('/fleet')}
             currentUserRole={isGuestMode ? 'admin' : authorizedRole}
           />
         )}
