@@ -708,7 +708,7 @@ export default function VoiceAgent({
               ? "🔴 Recording incoming waves... Click mic again to translate." 
               : isListening 
               ? "Speech capturing buffers active..." 
-              : "Ask Hermes (e.g. check system health on Node A)..."
+              : "Ask BuildOS (e.g. check system health on Node A)..."
           }
           className="flex-1 bg-[#262626] text-white rounded-none border border-[#393939] px-3.5 py-2.5 text-xs focus:outline-none focus:border-[#0f62fe] placeholder-[#6f6f6f]"
           disabled={loading || isRecordingTranscription}

@@ -47,94 +47,157 @@ html.light-mode ::-webkit-scrollbar-track {
 }
 
 html.light-mode ::-webkit-scrollbar-thumb {
-  background: #d1d1d1 !important;
+  background: #cbd5e1 !important;
 }
 
 html.light-mode ::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8 !important;
+  background: #94a3b8 !important;
 }
 
 /* Layout Color Map Redirections */
 html.light-mode .bg-\[\#161616\] {
-  background-color: #f4f4f4 !important;
+  background-color: #f8fafc !important; /* Very soft slate container background */
 }
 
-html.light-mode .bg-\[\#202020\] {
-  background-color: #ffffff !important;
-}
-
+/* White-based sleek cards for ultimate contrast in light mode */
+html.light-mode .bg-\[\#202020\],
 html.light-mode .bg-\[\#262626\] {
-  background-color: #e5e5e5 !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
 }
 
 html.light-mode .bg-\[\#111111\] {
-  background-color: #e5e5e5 !important;
+  background-color: #f1f5f9 !important;
 }
 
-/* Borders */
+/* Host Card Active Selection highlight overrides in Light Mode */
+html.light-mode .bg-\[\#353535\] {
+  background-color: #eff6ff !important; /* Soft sky blue */
+  border-color: #0f62fe !important;
+  box-shadow: 0 0 0 1px #0f62fe !important;
+}
+
+/* Host Card Hover and Inactive Highlights */
+html.light-mode .bg-\[\#313131\] {
+  background-color: #f1f5f9 !important;
+}
+
+/* Standard Grey Buttons inside panels in Light Mode */
+html.light-mode .bg-\[\#393939\] {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+  color: #1e293b !important;
+}
+
+/* Borders mapping to clean soft borders */
 html.light-mode .border-\[\#393939\] {
-  border-color: #d1d1d1 !important;
+  border-color: #e2e8f0 !important;
+}
+
+html.light-mode .border-\[\#4d4d4d\] {
+  border-color: #cbd5e1 !important;
 }
 
 html.light-mode .divide-\[\#393939\] > * + * {
-  border-color: #d1d1d1 !important;
+  border-color: #e2e8f0 !important;
 }
 
-/* Texts - light text becomes dark, dark text remains readable */
+/* Text Overrides - Slate palette overrides instead of flat white */
 html.light-mode .text-\[\#f4f4f4\] {
-  color: #161616 !important;
+  color: #0f172a !important; /* Deepest legible slate */
 }
 
 html.light-mode .text-\[\#c6c6c6\] {
-  color: #262626 !important;
+  color: #334155 !important; /* Intermediate body slate */
 }
 
 html.light-mode .text-\[\#a8a8a8\] {
-  color: #4d4d4d !important;
+  color: #475569 !important; /* Secondary info label Slate */
 }
 
 html.light-mode .text-\[\#8d8d8d\] {
-  color: #525252 !important;
+  color: #64748b !important; /* Metadata & mute label */
 }
 
+/* Dynamic text-white adjustments */
+html.light-mode h1,
+html.light-mode h2,
+html.light-mode h3,
+html.light-mode h4,
+html.light-mode h5,
+html.light-mode h6,
 html.light-mode .text-white {
-  color: #161616 !important;
+  color: #0f172a !important;
+}
+
+/* Retain white letters on bright/positive action button backgrounds in Light Mode */
+html.light-mode .bg-\[\#0f62fe\] *,
+html.light-mode .bg-\[\#0f62fe\],
+html.light-mode .bg-\[\#24a148\] *,
+html.light-mode .bg-\[\#24a148\],
+html.light-mode .bg-\[\#da1e28\] *,
+html.light-mode .bg-\[\#da1e28\],
+html.light-mode button.bg-\[\#0f62fe\] *,
+html.light-mode button.bg-\[\#0f62fe\],
+html.light-mode button.bg-red-500,
+html.light-mode button.bg-emerald-500,
+html.light-mode button.bg-indigo-600 {
+  color: #ffffff !important;
 }
 
 html.light-mode .text-\[\#78a9ff\] {
-  color: #0f62fe !important; /* Contrast enhanced blue */
+  color: #0f62fe !important; /* Transform to bright Carbon Blue */
 }
 
 html.light-mode .text-\#78a9ff {
   color: #0f62fe !important;
 }
 
-/* Modals, alerts & specialized sections */
+/* Modals overlays & specialized backdrops */
 html.light-mode .bg-black\/50,
-html.light-mode .bg-black\/60 {
-  background-color: rgba(22, 22, 22, 0.5) !important;
+html.light-mode .bg-black\/60,
+html.light-mode .bg-black\/75,
+html.light-mode .bg-black\/80 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+  backdrop-filter: blur(2px);
 }
 
-/* Hover and Interaction states */
+/* Hover & interactions */
 html.light-mode .hover\:bg-\[\#202020\]:hover {
-  background-color: #eaeaea !important;
+  background-color: #f8fafc !important;
+}
+
+html.light-mode .hover\:bg-\[\#313131\]:hover {
+  background-color: #f1f5f9 !important;
 }
 
 html.light-mode .hover\:bg-\[\#393939\]:hover {
-  background-color: #d1d1d1 !important;
+  background-color: #cbd5e1 !important;
 }
 
 html.light-mode .hover\:text-white:hover {
-  color: #161616 !important;
+  color: #0f172a !important;
 }
 
-/* Input boxes & Textareas */
+/* Ensure modal container itself resolves cleanly */
+html.light-mode #add-host-modal-container,
+html.light-mode #ssh-terminal-card,
+html.light-mode #llm-config-panel,
+html.light-mode #user-management-panel,
+html.light-mode #whatsapp-integration-container > div,
+html.light-mode #llm-config-panel > form {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* Input boxes, text fields & selectors */
 html.light-mode input,
 html.light-mode textarea,
 html.light-mode select {
   background-color: #ffffff !important;
-  color: #161616 !important;
-  border-color: #d1d1d1 !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
 }
 
 html.light-mode input:focus,
@@ -143,26 +206,29 @@ html.light-mode select:focus {
   border-color: #0f62fe !important;
 }
 
-/* Charts adjustment for Light Mode */
+/* Charts adjustments */
 html.light-mode .recharts-cartesian-grid line {
-  stroke: #e0e0e0 !important;
+  stroke: #cbd5e1 !important;
 }
 
 html.light-mode .recharts-text {
-  fill: #525252 !important;
+  fill: #475569 !important;
 }
 
-/* Console adjustments */
 html.light-mode .bg-black {
   background-color: #ffffff !important;
-  border-color: #d1d1d1 !important;
+  border-color: #cbd5e1 !important;
 }
 
+/* Color badges */
 html.light-mode .text-emerald-400 {
-  color: #198038 !important; /* Proper green contrast */
+  color: #166534 !important; /* Pure legible forest green */
 }
 
-/* SSH terminal shell and logs list output */
 html.light-mode .font-mono.text-emerald-400 {
-  color: #002d9c !important; /* Beautiful terminal blue in light mode */
+  color: #1e3a8a !important; /* Beautiful deep blue in light shell output text */
+}
+
+html.light-mode .text-slate-100 {
+  color: #1e293b !important;
 }
