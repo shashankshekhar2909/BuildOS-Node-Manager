@@ -10,6 +10,7 @@ export interface HostMachine {
   password?: string;
   privateKey?: string;
   isSimulated: boolean; // True to run a local virtual mock terminal inside the container
+  proxmox?: boolean;   // True if host runs ProxMox — enables pct LXC management tab
   simulatedStats?: {
     cpu: number;
     ram: number; // in GB

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Server,
   Plus,
@@ -68,13 +68,46 @@ export default function App() {
   }, [theme]);
 
   const [hosts, setHosts] = useState<HostMachine[]>([]);
-  const [activeHostId, setActiveHostId] = useState<string | null>(null);
+  const [activeHostId, setActiveHostId] = useState<string | null>(() => {
+    const parts = window.location.hash.replace('#', '').split('/');
+    return parts[0] === 'node-details' && parts[1] ? parts[1] : null;
+  });
   const [terminalLogs, setTerminalLogs] = useState<TerminalLog[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<HostMachine | null>(null);
-  const [activeTab, setActiveTab] = useState<'fleet' | 'node-details' | 'diagnostics' | 'chat' | 'whatsapp' | 'settings' | 'operators'>('fleet');
+  const VALID_TABS = ['fleet', 'node-details', 'diagnostics', 'chat', 'whatsapp', 'settings', 'operators'] as const;
+  type AppTab = typeof VALID_TABS[number];
+
+  const [activeTab, setActiveTab] = useState<AppTab>(() => {
+    const hash = window.location.hash.replace('#', '').split('/')[0] as AppTab;
+    return VALID_TABS.includes(hash) ? hash : 'fleet';
+  });
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
-  
+
+  // Hash-based routing: sync URL → state on browser back/forward
+  useEffect(() => {
+    const onHashChange = () => {
+      const parts = window.location.hash.replace('#', '').split('/');
+      const tab = parts[0] as AppTab;
+      const hostId = parts[1];
+      if (VALID_TABS.includes(tab)) {
+        setActiveTab(tab);
+        if (hostId) setActiveHostId(hostId);
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Hash-based routing: sync state → URL on tab/host change
+  useEffect(() => {
+    const hash = activeTab === 'node-details' && activeHostId
+      ? `#node-details/${activeHostId}`
+      : `#${activeTab}`;
+    window.history.replaceState(null, '', hash);
+    document.title = `BuildOS · ${activeTab.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
+  }, [activeTab, activeHostId]);
+
   // Real-time UTC Clock
   const [utcTime, setUtcTime] = useState('');
 
@@ -333,9 +366,68 @@ export default function App() {
     };
   }, []);
 
+  // Live telemetry polling for physical (non-simulated) hosts
+  const hostsRef = useRef<HostMachine[]>([]);
+  useEffect(() => { hostsRef.current = hosts; }, [hosts]);
+
+  useEffect(() => {
+    const pollPhysicalHosts = async () => {
+      const physical = hostsRef.current.filter(h => !h.isSimulated);
+      if (!physical.length) return;
+
+      const results = await Promise.allSettled(
+        physical.map(host =>
+          fetch(`/api/hosts/${host.id}/details`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host })
+          }).then(r => r.ok ? r.json() : Promise.reject())
+        )
+      );
+
+      const updates = new Map<string, { cpu: number; ram: number; disk: number; containers: number }>();
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled') {
+          const d = result.value;
+          updates.set(physical[i].id, {
+            cpu: d.cpu ?? 0,
+            ram: d.ram?.used ?? d.ram ?? 0,
+            disk: d.disk ?? 0,
+            containers: d.docker?.length ?? 0,
+          });
+        }
+      });
+
+      if (updates.size === 0) return;
+
+      setHosts(prev => prev.map(h => {
+        const live = updates.get(h.id);
+        if (!live) return h;
+        return {
+          ...h,
+          simulatedStats: {
+            ...(h.simulatedStats || {}),
+            cpu: live.cpu,
+            ram: live.ram,
+            disk: live.disk,
+            dockerContainersCount: live.containers,
+            openPorts: h.simulatedStats?.openPorts || [h.port],
+          }
+        };
+      }));
+    };
+
+    pollPhysicalHosts();
+    const interval = setInterval(pollPhysicalHosts, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleCreateOrUpdateHost = async (hostData: Omit<HostMachine, 'id'> & { id?: string }) => {
     try {
-      const processedHost = { ...hostData };
+      // Guest/sandbox mode: enforce simulated, strip credentials
+      const processedHost = isGuestMode
+        ? { ...hostData, isSimulated: true, password: undefined, privateKey: undefined }
+        : { ...hostData };
       const originalHost = hosts.find(h => h.id === hostData.id);
 
       // Secure client-side credentials protection pre-processing before Firestore / API write
@@ -668,9 +760,26 @@ export default function App() {
           </div>
         </div>
 
-        {/* Outer security credit */}
-        <div className="py-6 text-center text-[10px] text-[#6f6f6f] font-mono select-none">
-          SECURE ENVELOPE HANDSHAKE VERIFIED ● TRANSPARENT DATA STORAGE
+        {/* Creator attribution */}
+        <div className="py-6 text-center text-[11px] text-[#525252] font-sans select-none flex items-center justify-center gap-3">
+          <span>Built by</span>
+          <a
+            href="https://buildwithshashank.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#6366f1] hover:text-[#818cf8] font-semibold transition-colors"
+          >
+            BuildWithShashank
+          </a>
+          <span className="text-[#393939]">·</span>
+          {[
+            { label: 'GitHub', href: 'https://github.com/shashankshekhar2909' },
+            { label: 'LinkedIn', href: 'https://linkedin.com/in/shashankshekhar2k15' },
+            { label: 'Reddit', href: 'https://www.reddit.com/user/s_shekhar29/' },
+          ].map(s => (
+            <a key={s.label} href={s.href} target="_blank" rel="noopener noreferrer"
+              className="text-[#525252] hover:text-[#6366f1] transition-colors">{s.label}</a>
+          ))}
         </div>
       </div>
     );
@@ -696,13 +805,21 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="font-bold text-xs uppercase tracking-wider text-white font-mono select-none">BuildOS Node Commander</h1>
-              <span className="bg-[#262626] text-[#78a9ff] font-mono text-[9px] px-2 py-0.5 border border-[#393939]">
-                V1.6.5 STABLE
+              <h1 className="font-semibold text-[13px] text-white font-sans select-none tracking-tight">BuildOS Node Commander</h1>
+              <span className="bg-[#0f62fe]/15 text-[#78a9ff] font-mono text-[9px] px-2 py-0.5 border border-[#0f62fe]/30">
+                v1.6.5
               </span>
             </div>
-            <p className="hidden sm:block text-[9px] text-[#8d8d8d] uppercase tracking-wider font-mono mt-0.5">
-              Secure SSH Systems Management Hub
+            <p className="hidden sm:block text-[11px] font-sans mt-0.5">
+              <span className="text-[#6f6f6f]">SSH Fleet Management · by </span>
+              <a
+                href="https://buildwithshashank.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#6366f1] hover:text-[#818cf8] transition-colors font-medium"
+              >
+                BuildWithShashank
+              </a>
             </p>
           </div>
         </div>
@@ -711,14 +828,14 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           {/* UTC Real-time Clock */}
           <div className="hidden md:flex flex-col text-right pr-3 border-r border-[#393939]">
-            <span className="text-[8px] font-mono text-[#8d8d8d] uppercase tracking-widest">CLOCK_UTC</span>
-            <span className="font-mono text-xs text-[#c6c6c6] font-semibold">{utcTime || 'Syncing...'}</span>
+            <span className="text-[10px] font-sans text-[#6f6f6f]">UTC</span>
+            <span className="font-mono text-[11px] text-[#a8a8a8]">{utcTime ? utcTime.replace(' UTC', '') : 'Syncing...'}</span>
           </div>
 
           {/* Quick Status */}
-          <div className="hidden lg:flex items-center gap-2 bg-[#262626] px-2.5 py-1 border border-[#393939] text-[10px] font-mono uppercase text-[#42be65]">
-            <div className="h-1 text-xs w-1 bg-[#24a148]" />
-            <span>{hosts.length} Node{hosts.length !== 1 && 's'}</span>
+          <div className="hidden lg:flex items-center gap-1.5 bg-[#1e2a1e] px-2.5 py-1 border border-[#24a148]/30 text-[11px] font-sans text-[#42be65]">
+            <span className="h-1.5 w-1.5 rounded-none bg-[#24a148] animate-pulse" />
+            <span>{hosts.length} node{hosts.length !== 1 && 's'}</span>
           </div>
 
           {/* Theme Toggle Button */}
@@ -777,30 +894,30 @@ export default function App() {
         <aside className={`w-full md:w-64 bg-[#121212] border-b md:border-b-0 md:border-r border-[#393939] flex flex-col flex-shrink-0 select-none ${isMobileNavOpen ? 'block' : 'hidden md:flex'}`}>
           
           {/* Navigation Category Groups */}
-          <div className="flex-1 overflow-y-auto py-5 space-y-5">
-            
-            {/* GROUP 1: COMPUTATIONAL FLEET */}
-            <div className="space-y-1">
-              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
-                Fleet Registry
+          <div className="flex-1 overflow-y-auto py-4 space-y-4">
+
+            {/* GROUP 1: FLEET */}
+            <div className="space-y-0.5">
+              <span className="text-[10px] font-semibold text-[#525252] px-4 uppercase tracking-widest block font-sans mb-1.5">
+                Fleet
               </span>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 <button
                   onClick={() => {
                     setActiveTab('fleet');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center justify-between border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center justify-between border-l-[3px] cursor-pointer ${
                     activeTab === 'fleet'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Server className={`h-4 w-4 ${activeTab === 'fleet' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                    <span>FLEET_OVERVIEW</span>
+                    <Server className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'fleet' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                    <span>Fleet Overview</span>
                   </div>
-                  <span className="text-[9px] font-mono font-bold bg-[#262626] border border-[#393939] px-1.5 py-0.5 text-[#78a9ff] rounded-none">
+                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-none ${activeTab === 'fleet' ? 'bg-[#0f62fe]/20 text-[#78a9ff]' : 'bg-[#262626] border border-[#393939] text-[#6f6f6f]'}`}>
                     {hosts.length}
                   </span>
                 </button>
@@ -810,18 +927,18 @@ export default function App() {
                     setActiveTab('node-details');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center justify-between border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center justify-between border-l-[3px] cursor-pointer ${
                     activeTab === 'node-details'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Cpu className={`h-4 w-4 ${activeTab === 'node-details' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                    <span>NODE_DETAILS</span>
+                    <Cpu className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'node-details' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                    <span>Node Details</span>
                   </div>
                   {activeHost && (
-                    <span className="text-[9px] text-[#42be65] font-mono truncate max-w-[80px]">
+                    <span className="text-[9px] text-[#42be65] font-mono truncate max-w-[72px] leading-none">
                       ● {activeHost.name}
                     </span>
                   )}
@@ -829,25 +946,25 @@ export default function App() {
               </div>
             </div>
 
-            {/* GROUP 2: DIAGNOSTICS & GATEWAYS */}
-            <div className="space-y-1">
-              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
+            {/* GROUP 2: OPERATIONS */}
+            <div className="space-y-0.5">
+              <span className="text-[10px] font-semibold text-[#525252] px-4 uppercase tracking-widest block font-sans mb-1.5">
                 Operations
               </span>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 <button
                   onClick={() => {
                     setActiveTab('diagnostics');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
                     activeTab === 'diagnostics'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
-                  <TerminalSquare className={`h-4 w-4 ${activeTab === 'diagnostics' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                  <span>DIAGNOSTICS_LAB</span>
+                  <TerminalSquare className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'diagnostics' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                  <span>Diagnostics Lab</span>
                 </button>
 
                 <button
@@ -855,60 +972,60 @@ export default function App() {
                     setActiveTab('whatsapp');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
                     activeTab === 'whatsapp'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
-                  <MessageSquare className={`h-4 w-4 ${activeTab === 'whatsapp' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                  <span>SMS_WEBHOOK_SIM</span>
+                  <MessageSquare className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'whatsapp' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                  <span>SMS Webhook</span>
                 </button>
               </div>
             </div>
 
-            {/* GROUP 3: COGNITIVE SERVICES */}
-            <div className="space-y-1">
-              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
-                Cognitive Matrix
+            {/* GROUP 3: INTELLIGENCE */}
+            <div className="space-y-0.5">
+              <span className="text-[10px] font-semibold text-[#525252] px-4 uppercase tracking-widest block font-sans mb-1.5">
+                Intelligence
               </span>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 <button
                   onClick={() => {
                     setActiveTab('chat');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
                     activeTab === 'chat'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
-                  <Bot className={`h-4 w-4 ${activeTab === 'chat' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                  <span>AI_COGNITIVE_CHAT</span>
+                  <Bot className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'chat' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                  <span>AI Agent</span>
                 </button>
               </div>
             </div>
 
-            {/* GROUP 4: ADMINISTRATION & SECURITY */}
-            <div className="space-y-1">
-              <span className="text-[9px] font-bold text-[#6f6f6f] px-4 uppercase tracking-widest block font-mono">
-                Governance
+            {/* GROUP 4: ADMIN */}
+            <div className="space-y-0.5">
+              <span className="text-[10px] font-semibold text-[#525252] px-4 uppercase tracking-widest block font-sans mb-1.5">
+                Admin
               </span>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 <button
                   onClick={() => {
                     setActiveTab('settings');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
                     activeTab === 'settings'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
-                  <Settings className={`h-4 w-4 ${activeTab === 'settings' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                  <span>SYSTEM_CONFIG</span>
+                  <Settings className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'settings' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                  <span>System Config</span>
                 </button>
 
                 <button
@@ -916,14 +1033,14 @@ export default function App() {
                     setActiveTab('operators');
                     setIsMobileNavOpen(false);
                   }}
-                  className={`w-full text-left px-4 py-3 text-[11px] font-mono tracking-wider uppercase transition-all flex items-center gap-2.5 border-l-4 cursor-pointer ${
+                  className={`w-full text-left px-4 py-2.5 text-[12px] font-sans transition-all flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
                     activeTab === 'operators'
-                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-bold'
-                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-white'
+                      ? 'border-l-[#0f62fe] bg-[#222222] text-white font-semibold'
+                      : 'border-l-transparent text-[#a8a8a8] hover:bg-[#1a1a1a] hover:text-[#e0e0e0]'
                   }`}
                 >
-                  <Users className={`h-4 w-4 ${activeTab === 'operators' ? 'text-[#78a9ff]' : 'text-[#8d8d8d]'}`} />
-                  <span>OPERATORS</span>
+                  <Users className={`h-3.5 w-3.5 shrink-0 ${activeTab === 'operators' ? 'text-[#78a9ff]' : 'text-[#6f6f6f]'}`} />
+                  <span>Operators</span>
                 </button>
               </div>
             </div>
@@ -938,10 +1055,10 @@ export default function App() {
                   setEditingHost(null);
                   setIsAddModalOpen(true);
                 }}
-                className="w-full bg-[#0f62fe] hover:bg-[#0353e9] text-white border border-[#0f62fe] rounded-none text-[10px] font-mono font-bold tracking-widest uppercase py-2.5 flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                className="w-full bg-[#0f62fe] hover:bg-[#0353e9] text-white border border-[#0f62fe] rounded-none text-[11px] font-sans font-semibold tracking-wide py-2.5 flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>REGISTER_NEW_NODE</span>
+                <span>Register Node</span>
               </button>
             </div>
           )}
@@ -954,9 +1071,15 @@ export default function App() {
           <div className="space-y-6">
             {/* Host Machines list Section */}
             <section className="space-y-6">
-              <div className="flex items-center justify-between border-b border-[#393939] pb-2 font-mono">
-                <h2 className="text-[10px] font-bold text-[#8d8d8d] uppercase tracking-wider block">ACTIVE FLEET GENERAL OVERVIEW</h2>
-                <span className="text-[9px] text-[#8d8d8d] uppercase tracking-wider select-none">Live Telemetry refreshed every 6s</span>
+              <div className="flex items-center justify-between border-b border-[#393939] pb-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-white font-sans">Active Fleet</h2>
+                  <p className="text-[11px] text-[#8d8d8d] font-sans mt-0.5">Node telemetry refreshed every 6s</p>
+                </div>
+                <span className="text-[10px] text-[#42be65] font-mono flex items-center gap-1.5 select-none">
+                  <span className="h-1.5 w-1.5 rounded-none bg-[#42be65] animate-pulse" />
+                  Live
+                </span>
               </div>
 
               {hosts.length === 0 ? (
@@ -976,44 +1099,50 @@ export default function App() {
               ) : (
                 <div className="space-y-6">
                   {/* Fleet High-Level Aggregate Metrics */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-[#262626] border border-[#393939] border-l-2 border-l-[#0f62fe] p-4 rounded-none flex items-start justify-between">
                       <div>
-                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Connected Fleets</span>
-                        <span className="text-xl font-bold font-mono text-white mt-1 block">{hosts.length} Node{hosts.length !== 1 && 's'}</span>
+                        <span className="text-[11px] text-[#8d8d8d] font-sans block">Total Nodes</span>
+                        <span className="text-2xl font-bold font-mono text-white mt-1.5 block">{hosts.length}</span>
+                        <span className="text-[10px] text-[#6f6f6f] font-mono">{hosts.length !== 1 ? 'registered nodes' : 'registered node'}</span>
                       </div>
-                      <Server className="h-6 w-6 text-[#78a9ff]" />
+                      <Server className="h-4 w-4 text-[#4589ff] mt-0.5 shrink-0" />
                     </div>
-                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                    <div className="bg-[#262626] border border-[#393939] border-l-2 border-l-[#24a148] p-4 rounded-none flex items-start justify-between">
                       <div>
-                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Health Diagnostics</span>
-                        <span className="text-xl font-bold font-mono text-[#42be65] mt-1 block uppercase">Active</span>
+                        <span className="text-[11px] text-[#8d8d8d] font-sans block">Health Status</span>
+                        <span className="text-2xl font-bold font-mono text-[#42be65] mt-1.5 block">Active</span>
+                        <span className="text-[10px] text-[#6f6f6f] font-mono flex items-center gap-1"><span className="h-1.5 w-1.5 bg-[#42be65] rounded-none animate-pulse inline-block" /> monitoring</span>
                       </div>
-                      <div className="h-2 w-2 rounded-none bg-[#24a148] animate-pulse" />
+                      <div className="h-4 w-4 rounded-none bg-[#24a148]/20 border border-[#24a148]/40 flex items-center justify-center mt-0.5 shrink-0">
+                        <span className="h-1.5 w-1.5 rounded-none bg-[#24a148] animate-pulse" />
+                      </div>
                     </div>
-                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                    <div className="bg-[#262626] border border-[#393939] border-l-2 border-l-[#f1c21b] p-4 rounded-none flex items-start justify-between">
                       <div>
-                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Fleet Average CPU</span>
-                        <span className="text-xl font-bold font-mono text-white mt-1 block">
+                        <span className="text-[11px] text-[#8d8d8d] font-sans block">Avg CPU Load</span>
+                        <span className="text-2xl font-bold font-mono text-white mt-1.5 block">
                           {hosts.length > 0
                             ? `${Math.round(hosts.reduce((acc, h) => acc + (h.simulatedStats?.cpu || 12), 0) / hosts.length)}%`
-                            : '0%'
+                            : '—'
                           }
                         </span>
+                        <span className="text-[10px] text-[#6f6f6f] font-mono">across fleet</span>
                       </div>
-                      <Cpu className="h-6 w-6 text-[#78a9ff]" />
+                      <Cpu className="h-4 w-4 text-[#f1c21b] mt-0.5 shrink-0" />
                     </div>
-                    <div className="bg-[#262626] border border-[#393939] p-4 rounded-none flex items-center justify-between shadow-sm">
+                    <div className="bg-[#262626] border border-[#393939] border-l-2 border-l-[#8a3ffc] p-4 rounded-none flex items-start justify-between">
                       <div>
-                        <span className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wider block">Fleet RAM Capacity</span>
-                        <span className="text-xl font-bold font-mono text-white mt-1 block">
+                        <span className="text-[11px] text-[#8d8d8d] font-sans block">Avg RAM Usage</span>
+                        <span className="text-2xl font-bold font-mono text-white mt-1.5 block">
                           {hosts.length > 0
                             ? `${(hosts.reduce((acc, h) => acc + (h.simulatedStats?.ram || 4.2), 0) / hosts.length).toFixed(1)} GB`
-                            : '0 GB'
+                            : '—'
                           }
                         </span>
+                        <span className="text-[10px] text-[#6f6f6f] font-mono">per node avg</span>
                       </div>
-                      <Layers className="h-6 w-6 text-[#78a9ff]" />
+                      <Layers className="h-4 w-4 text-[#a56eff] mt-0.5 shrink-0" />
                     </div>
                   </div>
 
@@ -1076,9 +1205,9 @@ export default function App() {
               {activeHost && (
                 <div className="flex items-center gap-3">
                   <span className="text-[#8d8d8d] uppercase tracking-wider">Node Status:</span>
-                  <span className="bg-[#1a3821] text-[#42be65] font-bold text-[10px] px-2.5 py-1 border border-[#24a148]/30 uppercase tracking-widest flex items-center gap-1.5">
+                  <span className="bg-[#1a3821] text-[#42be65] font-semibold text-[11px] px-2.5 py-1 border border-[#24a148]/30 font-sans flex items-center gap-1.5">
                     <span className="h-1.5 w-1.5 bg-[#42be65] rounded-none animate-pulse" />
-                    ONLINE & METRIC_INGRESS_STABLE
+                    Online · Telemetry active
                   </span>
                 </div>
               )}
@@ -1088,6 +1217,7 @@ export default function App() {
               <div className="space-y-6">
                 {/* Node details, metrics, docker & service controls */}
                 <NodeMonitor
+                  key={activeHostId}
                   host={activeHost}
                   currentUserRole={isGuestMode ? 'admin' : authorizedRole}
                 />
@@ -1097,6 +1227,7 @@ export default function App() {
                   {/* SSH Terminal Console */}
                   <div className="lg:col-span-7 flex flex-col">
                     <SSHConsole
+                      key={activeHostId}
                       host={activeHost}
                       onLogged={handleLoggedCommand}
                       currentUserRole={isGuestMode ? 'admin' : authorizedRole}
@@ -1112,18 +1243,17 @@ export default function App() {
                       </div>
 
                       <div id="audit-logs-list" className="flex-grow overflow-y-auto space-y-2 max-h-[320px] scrollbar-thin">
-                        {terminalLogs.map((log) => (
+                        {terminalLogs.filter(log => !activeHost || log.hostName === activeHost.name).map((log) => (
                           <div key={log.id} className="flex items-start justify-between gap-4 font-mono text-[10px] p-2.5 bg-[#161616] border border-[#393939] rounded-none">
                             <div className="truncate shrink">
                               <span className={`${log.isError ? 'text-[#ff8389]' : 'text-[#42be65]'}`}>[$]</span>{' '}
-                              <span className="text-[#78a9ff] font-bold">[{log.hostName}]</span>{' '}
                               <code className="text-[#f4f4f4]">{log.command}</code>
                             </div>
                             <span className="text-[9px] text-[#8d8d8d] shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
                           </div>
                         ))}
-                        {terminalLogs.length === 0 && (
-                          <p className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wide py-14 text-center select-none">No diagnostic log trails recorded yet.</p>
+                        {terminalLogs.filter(log => !activeHost || log.hostName === activeHost.name).length === 0 && (
+                          <p className="text-[10px] font-mono text-[#8d8d8d] uppercase tracking-wide py-14 text-center select-none">No commands run on {activeHost?.name ?? 'this node'} yet.</p>
                         )}
                       </div>
                     </div>
@@ -1151,7 +1281,7 @@ export default function App() {
         )}
 
         {activeTab === 'chat' && (
-          <div className="h-[700px] animate-fade-in flex flex-col">
+          <div className="min-h-[600px] h-[calc(100vh-200px)] animate-fade-in flex flex-col">
             <VoiceAgent
               hosts={hosts}
               activeHostId={activeHostId}
@@ -1193,16 +1323,47 @@ export default function App() {
       </div>
 
       {/* Footer Banner */}
-      <footer className="bg-[#111111] border-t border-[#393939] py-5 px-6 mt-12 text-center text-[10px] font-mono text-[#8d8d8d] select-none uppercase tracking-wider">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-1.5">
-            <ShieldCheck className="h-4 w-4 text-[#42be65]" />
-            <span>Secure Sandboxed Execution Env</span>
+      <footer className="bg-[#0d0d0d] border-t border-[#2d2d2d] py-4 px-6 font-sans select-none">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
+          {/* Left: attribution */}
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-[#525252]">Built by</span>
+            <a
+              href="https://buildwithshashank.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#6366f1] hover:text-[#818cf8] font-semibold transition-colors"
+            >
+              BuildWithShashank
+            </a>
+            <span className="text-[#393939]">·</span>
+            <span className="text-[#525252]">© {new Date().getFullYear()} BuildOS Node Commander</span>
           </div>
-          <p>© 2026 BuildOS Node Dashboard. Cloud persistence activated securely.</p>
-          <div className="flex items-center gap-2">
-            <Code className="h-4 w-4 text-[#8d8d8d]" />
-            <span>Voice & Text LLM-Independent Framework</span>
+
+          {/* Center: security note */}
+          <div className="flex items-center gap-1.5 text-[10px] text-[#3d3d3d]">
+            <ShieldCheck className="h-3 w-3 text-[#3d3d3d]" />
+            <span>AES-256 encrypted credentials · Firebase Firestore sync</span>
+          </div>
+
+          {/* Right: social links */}
+          <div className="flex items-center gap-3 text-[11px]">
+            {[
+              { label: 'GitHub', href: 'https://github.com/shashankshekhar2909' },
+              { label: 'LinkedIn', href: 'https://linkedin.com/in/shashankshekhar2k15' },
+              { label: 'Reddit', href: 'https://www.reddit.com/user/s_shekhar29/' },
+              { label: 'Website', href: 'https://buildwithshashank.com' },
+            ].map(s => (
+              <a
+                key={s.label}
+                href={s.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#525252] hover:text-[#6366f1] transition-colors"
+              >
+                {s.label}
+              </a>
+            ))}
           </div>
         </div>
       </footer>
@@ -1213,6 +1374,7 @@ export default function App() {
         onClose={() => setIsAddModalOpen(false)}
         onSave={handleCreateOrUpdateHost}
         editingHost={editingHost}
+        forceSimulated={isGuestMode}
       />
     </div>
   );

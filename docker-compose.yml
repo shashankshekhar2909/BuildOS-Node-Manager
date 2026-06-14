@@ -1,17 +1,17 @@
-version: '3.8'
-
 services:
-  hermes-dashboard:
+  buildos-node-manager:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: hermes_dashboard_node
+    container_name: buildos_node_manager
     ports:
-      - "3000:3000"
+      - "3320:3000"
     environment:
       - NODE_ENV=production
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET}
+      - DEMO_MODE=${DEMO_MODE:-false}
     volumes:
       - ./data:/app/data
-    restart: always
+    restart: unless-stopped

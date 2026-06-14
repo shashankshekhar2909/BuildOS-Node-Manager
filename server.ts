@@ -67,7 +67,19 @@ function decrypt(encryptedText: string | undefined): string {
 const app = express();
 const PORT = 3000;
 
+app.use((req, res, next) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
+  next();
+});
+
 app.use(express.json());
+
+// Demo/sandbox mode — set DEMO_MODE=true to block all real SSH execution (for public demos)
+const DEMO_MODE = process.env.DEMO_MODE === 'true';
+if (DEMO_MODE) {
+  console.log('[DEMO MODE] Real SSH execution disabled. All commands are simulated.');
+}
 
 // File-based persistence paths
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -202,7 +214,7 @@ const readConfig = (): LLMConfig => {
   const defaultConfig: LLMConfig = {
     provider: "gemini",
     apiKey: process.env.GEMINI_API_KEY || "",
-    modelName: "gemini-3.5-flash"
+    modelName: "gemini-2.0-flash"
   };
 
   if (!fs.existsSync(CONFIG_FILE)) {
@@ -430,7 +442,7 @@ function executeRealSSH(host: HostMachine, command: string): Promise<string> {
 
 // Global host execution router
 async function runCommandOnHost(host: HostMachine, command: string): Promise<{ output: string, isError: boolean }> {
-  if (host.isSimulated) {
+  if (host.isSimulated || DEMO_MODE) {
     try {
       const output = executeSimulatedCommand(host, command);
       addTerminalLog(host.id, host.name, command, output, false);
@@ -617,7 +629,9 @@ app.post("/api/hosts", (req, res) => {
     ...req.body,
     id: `host-${Date.now()}`,
     port: Number(req.body.port) || 22,
-    isSimulated: !!req.body.isSimulated
+    isSimulated: DEMO_MODE ? true : !!req.body.isSimulated,
+    // Strip credentials in demo mode so they're never stored
+    ...(DEMO_MODE ? { password: undefined, privateKey: undefined } : {})
   };
 
   if (newHost.isSimulated && !newHost.simulatedStats) {
@@ -673,7 +687,21 @@ app.delete("/api/hosts/:id", (req, res) => {
   res.json({ success: true });
 });
 
-// GET detailed diagnostics for a specific host (metrics, dockers, services)
+// GET/POST detailed diagnostics for a specific host (metrics, dockers, services)
+// POST body may include full host object (for Firestore-managed hosts not in local JSON)
+app.post("/api/hosts/:id/details", async (req, res) => {
+  try {
+    const host = req.body?.host || readHosts().find(h => h.id === req.params.id);
+    if (!host) {
+      return res.status(404).json({ error: "Host not found" });
+    }
+    const diagnostics = await fetchHostDiagnostics(host);
+    res.json(diagnostics);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to retrieve host details" });
+  }
+});
+
 app.get("/api/hosts/:id/details", async (req, res) => {
   try {
     const host = readHosts().find(h => h.id === req.params.id);
@@ -689,9 +717,9 @@ app.get("/api/hosts/:id/details", async (req, res) => {
 
 // POST trigger Action on simulated or real Docker container
 app.post("/api/hosts/:id/docker/action", async (req, res) => {
-  const { containerId, containerName, actionName } = req.body;
+  const { containerId, containerName, actionName, host: bodyHost } = req.body;
   try {
-    const host = readHosts().find(h => h.id === req.params.id);
+    const host = bodyHost || readHosts().find(h => h.id === req.params.id);
     if (!host) {
       return res.status(404).json({ error: "Host not found" });
     }
@@ -716,9 +744,9 @@ app.post("/api/hosts/:id/docker/action", async (req, res) => {
 
 // POST trigger Action on simulated or real systemd Service
 app.post("/api/hosts/:id/services/action", async (req, res) => {
-  const { serviceName, actionName } = req.body;
+  const { serviceName, actionName, host: bodyHost } = req.body;
   try {
-    const host = readHosts().find(h => h.id === req.params.id);
+    const host = bodyHost || readHosts().find(h => h.id === req.params.id);
     if (!host) {
       return res.status(404).json({ error: "Host not found" });
     }
@@ -739,6 +767,96 @@ app.post("/api/hosts/:id/services/action", async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Service action failed" });
   }
+});
+
+// ── ProxMox LXC Management ──────────────────────────────────────────────────
+
+// List all LXC containers on a ProxMox host
+app.post("/api/hosts/:id/pct/list", async (req, res) => {
+  const host = req.body?.host || readHosts().find((h: any) => h.id === req.params.id);
+  if (!host) return res.status(404).json({ error: "Host not found" });
+  try {
+    const result = await runCommandOnHost(host, "pct list 2>/dev/null || echo 'pct_not_found'");
+    if (result.output.includes("pct_not_found") || result.isError) {
+      return res.status(400).json({ error: "pct command not available on this host" });
+    }
+    const lines = result.output.trim().split("\n").slice(1); // skip header
+    const containers = lines.map(line => {
+      const parts = line.trim().split(/\s+/);
+      return {
+        ctid: parts[0] || "",
+        status: parts[1] || "unknown",
+        name: parts[3] || parts[2] || `CT ${parts[0]}`
+      };
+    }).filter(c => c.ctid && /^\d+$/.test(c.ctid));
+    res.json({ containers });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List Docker containers inside a specific LXC container
+app.post("/api/hosts/:id/pct/:ctid/docker", async (req, res) => {
+  const host = req.body?.host || readHosts().find((h: any) => h.id === req.params.id);
+  if (!host) return res.status(404).json({ error: "Host not found" });
+  const { ctid } = req.params;
+  try {
+    const result = await runCommandOnHost(
+      host,
+      `pct exec ${ctid} -- docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}' 2>/dev/null`
+    );
+    if (result.isError || !result.output.trim()) {
+      return res.json({ containers: [] });
+    }
+    const containers = result.output.trim().split("\n")
+      .filter(line => line.includes("|"))
+      .map(line => {
+        const [id, name, image, status, ports] = line.split("|");
+        return { id: id?.trim(), name: name?.trim(), image: image?.trim(), status: status?.trim(), ports: ports?.trim() || "" };
+      });
+    res.json({ containers });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Perform Docker action inside an LXC container via pct exec
+app.post("/api/hosts/:id/pct/:ctid/docker/action", async (req, res) => {
+  const host = req.body?.host || readHosts().find((h: any) => h.id === req.params.id);
+  if (!host) return res.status(404).json({ error: "Host not found" });
+  const { ctid } = req.params;
+  const { containerId, containerName, actionName } = req.body;
+  try {
+    const command = `pct exec ${ctid} -- docker ${actionName} ${containerId}`;
+    const result = await runCommandOnHost(host, command);
+    if (result.isError) throw new Error(result.output);
+    res.json({ success: true, command, output: result.output });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Start / stop / restart an LXC container on ProxMox
+app.post("/api/hosts/:id/pct/:ctid/action", async (req, res) => {
+  const host = req.body?.host || readHosts().find((h: any) => h.id === req.params.id);
+  if (!host) return res.status(404).json({ error: "Host not found" });
+  const { ctid } = req.params;
+  const { actionName } = req.body; // start | stop | restart
+  const allowed = ["start", "stop", "restart", "shutdown"];
+  if (!allowed.includes(actionName)) return res.status(400).json({ error: "Invalid action" });
+  try {
+    const command = `pct ${actionName} ${ctid}`;
+    const result = await runCommandOnHost(host, command);
+    if (result.isError) throw new Error(result.output);
+    res.json({ success: true, command, output: result.output });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Server status — exposes demo mode flag to frontend
+app.get("/api/status", (_req, res) => {
+  res.json({ demoMode: DEMO_MODE, version: "1.6.5" });
 });
 
 // Logs API
@@ -821,6 +939,9 @@ app.post("/api/ssh/execute", async (req, res) => {
   if (!host) {
     return res.status(404).json({ error: "Host not found" });
   }
+
+  // Demo mode: treat all hosts as simulated
+  if (DEMO_MODE) host = { ...host, isSimulated: true };
   const result = await runCommandOnHost(host, command);
   res.json(result);
 });
@@ -864,7 +985,11 @@ function formatLLMError(error: any): string {
 app.post("/api/agent/chat", async (req, res) => {
   try {
     const { message, chatHistory = [], activeHostId, hosts: clientHosts, modelMode, currentUserRole, selectedHostIds } = req.body;
-    const hosts = clientHosts || readHosts();
+    // In demo mode: force all hosts to simulated, strip credentials so LLM never sees real IPs/passwords
+    const rawHosts = clientHosts || readHosts();
+    const hosts = DEMO_MODE
+      ? rawHosts.map((h: any) => ({ ...h, isSimulated: true, password: undefined, privateKey: undefined }))
+      : rawHosts;
     const config = await getActiveConfig();
 
     // Setup contextual instruction
@@ -899,24 +1024,27 @@ The server will capture this action, run the command on the target host (real SS
 
 If multiple systems are targeted, you should formulate consecutive 'ssh_exec' instructions to gather information across all of them (one after another) before presenting your final comparative analysis reply!
 
-Format your responses MUST be valid JSON matching EXACTLY one of these two schemas:
+Your responses MUST be valid JSON matching EXACTLY one of these two schemas:
 
 1) To execute an SSH command:
 {
-  "thoughts": "Write your internal reasoning here explaining why you need this data.",
+  "thoughts": "Your internal reasoning — translate the user's question into which shell command answers it.",
   "action": "ssh_exec",
   "hostId": "The ID of the host machine to execute on",
-  "command": "The shell command to run (e.g., 'docker ps', 'uptime', 'free -h', 'df -h', 'ss -tuln', or normal commands)"
+  "command": "A valid POSIX bash command to run via SSH (e.g. 'lsblk', 'df -h', 'free -h', 'docker ps', 'ss -tuln', 'uname -a'). This field MUST contain executable bash code only — NEVER natural language, questions, or English sentences."
 }
 
-2) To provide your final answer to the user (once you have gathered all required stats or if no command is needed):
+2) To provide your final answer (once all data is gathered, or no command is needed):
 {
-  "thoughts": "Write your internal reasoning planning this summary.",
+  "thoughts": "Your internal reasoning summarising findings.",
   "action": "reply",
-  "text": "Your final detailed human response here. Use markdown formatting. List docker counts, port states, stats, etc."
+  "text": "Your final response to the user. Use markdown. Be concise and informative."
 }
 
-CRITICAL: ONLY respond with the raw JSON object itself in your text response. Do not surround it with markdown codeblocks or other formatting. Under any circumstances, your entire output must be parseable JSON. Always prioritize the activeHostSelected in UI unless the user specifies a different machine name/IP.`;
+CRITICAL RULES:
+- The "command" field must ALWAYS be a runnable bash command. Translate any natural-language question into the appropriate shell command (e.g. 'How many disks?' → 'lsblk -d -o NAME,SIZE,TYPE', 'What is the OS?' → 'uname -a && cat /etc/os-release').
+- ONLY output the raw JSON object — no markdown fences, no extra text.
+- Always target the activeHostSelected in UI unless the user specifies a different host.`;
 
     const executionActions: any[] = [];
     let currentPrompt = `User Query: "${message}"\nChat History:\n${JSON.stringify(chatHistory)}`;
@@ -940,15 +1068,15 @@ CRITICAL: ONLY respond with the raw JSON object itself in your text response. Do
           httpOptions: { headers: { "User-Agent": "aistudio-build" } }
         });
         
-        let modelToUse = "gemini-3.5-flash";
+        let modelToUse = "gemini-2.0-flash";
         if (modelMode === "pro") {
-          modelToUse = "gemini-3.1-pro-preview";
+          modelToUse = "gemini-2.5-pro-preview-06-05";
         } else if (modelMode === "lite") {
-          modelToUse = "gemini-3.1-flash-lite";
+          modelToUse = "gemini-2.0-flash-lite";
         } else if (modelMode === "flash") {
-          modelToUse = "gemini-3.5-flash";
+          modelToUse = "gemini-2.0-flash";
         } else {
-          modelToUse = config.modelName || "gemini-3.5-flash";
+          modelToUse = config.modelName || "gemini-2.0-flash";
         }
 
         const response = await ai.models.generateContent({
@@ -1093,6 +1221,13 @@ CRITICAL: ONLY respond with the raw JSON object itself in your text response. Do
           status: "pending"
         });
 
+        // Guard: reject natural-language accidentally passed as command
+        const nlPattern = /^(how|what|why|where|when|does|can|is|are|show|tell|list|find|get|check|count|give|describe|explain)\s/i;
+        if (nlPattern.test(actionCmd.trim()) || actionCmd.trim().endsWith('?')) {
+          currentPrompt += `\n[Tool Error: "${actionCmd}" is natural language, not a valid bash command. Translate the user's question into a real shell command (e.g. 'lsblk -d', 'df -h', 'free -h') and try again.]\n\nWhat is your next action?`;
+          continue;
+        }
+
         // Run command on host
         const cmdResult = await runCommandOnHost(targetHost, actionCmd);
 
@@ -1144,7 +1279,7 @@ app.post("/api/transcribe", async (req, res) => {
     });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.0-flash",
       contents: [
         {
           inlineData: {
@@ -1196,7 +1331,7 @@ Provide your response in a supportive, markdown-formatted report with:
 Keep the advice highly practical, brief, action-oriented, and perfectly styled inside system engineering terminology. Minimize filler text.`;
 
     const response = await ai.models.generateContent({
-      model: config.modelName || "gemini-3.5-flash",
+      model: config.modelName || "gemini-2.0-flash",
       contents: prompt
     });
 
@@ -1239,7 +1374,7 @@ Available Hosts: ${JSON.stringify(hostMetadata)}`;
       if (!apiKey) throw new Error("No Gemini Key");
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: `Translate requested instruction into brief advice or run actions: "${incomingMessage}"`,
         config: { systemInstruction }
       });
@@ -1290,7 +1425,7 @@ async function startServer() {
 
     try {
       const session = await ai.live.connect({
-        model: "gemini-3.1-flash-live-preview",
+        model: "gemini-2.0-flash-live-001",
         config: {
           responseModalities: ["AUDIO" as any],
           speechConfig: {

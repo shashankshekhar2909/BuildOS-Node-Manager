@@ -12,7 +12,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/data ./data
+COPY --from=builder /app/firebase-applet-config.json ./firebase-applet-config.json
+RUN mkdir -p data
 
 # Expose the mandatory port 3000
 EXPOSE 3000

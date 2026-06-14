@@ -45,7 +45,7 @@ export default function VoiceAgent({
   const [loading, setLoading] = useState(false);
   const [expandedTrace, setExpandedTrace] = useState<Record<string, boolean>>({});
   
-  // Model modes: 'pro' (gemini-3.1-pro-preview), 'flash' (gemini-3.5-flash), 'lite' (gemini-3.1-flash-lite)
+  // Model modes: 'pro' (gemini-2.5-pro), 'flash' (gemini-2.0-flash), 'lite' (gemini-2.0-flash-lite)
   const [modelMode, setModelMode] = useState<'pro' | 'flash' | 'lite'>('flash');
 
   // Real-time Live API Voice state (gemini-3.1-flash-live-preview)

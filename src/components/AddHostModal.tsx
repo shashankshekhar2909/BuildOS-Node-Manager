@@ -7,9 +7,10 @@ interface AddHostModalProps {
   onClose: () => void;
   onSave: (host: Omit<HostMachine, 'id'> & { id?: string }) => void;
   editingHost?: HostMachine | null;
+  forceSimulated?: boolean; // guest/demo mode: lock to simulated only
 }
 
-export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: AddHostModalProps) {
+export default function AddHostModal({ isOpen, onClose, onSave, editingHost, forceSimulated = false }: AddHostModalProps) {
   const [name, setName] = useState('');
   const [ip, setIp] = useState('');
   const [port, setPort] = useState(22);
@@ -18,6 +19,7 @@ export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: A
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [isSimulated, setIsSimulated] = useState(true);
+  const [proxmox, setProxmox] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
 
   useEffect(() => {
@@ -30,6 +32,7 @@ export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: A
       setPassword(editingHost.password ? (editingHost.password.startsWith('ENC:') ? '••••••••••••' : editingHost.password) : '');
       setPrivateKey(editingHost.privateKey ? (editingHost.privateKey.startsWith('ENC:') ? '••••••••••••' : editingHost.privateKey) : '');
       setIsSimulated(editingHost.isSimulated);
+      setProxmox(editingHost.proxmox ?? false);
     } else {
       setName('');
       setIp('');
@@ -39,6 +42,7 @@ export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: A
       setPassword('');
       setPrivateKey('');
       setIsSimulated(true);
+      setProxmox(false);
     }
   }, [editingHost, isOpen]);
 
@@ -55,7 +59,8 @@ export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: A
       authType,
       password: authType === 'password' ? password : '',
       privateKey: authType === 'privateKey' ? privateKey : '',
-      isSimulated
+      isSimulated,
+      proxmox
     });
   };
 
@@ -73,24 +78,56 @@ export default function AddHostModal({ isOpen, onClose, onSave, editingHost }: A
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-5 overflow-y-auto max-h-[75vh]">
-          {/* Simulation toggle */}
-          <div className="bg-[#161616] border border-[#393939] p-4 rounded-none flex items-start gap-3">
+          {/* Sandbox mode notice */}
+          {forceSimulated && (
+            <div className="bg-[#f1c21b]/8 border border-[#f1c21b]/30 p-3 flex items-start gap-2.5">
+              <span className="text-[#f1c21b] text-[11px] font-mono font-bold shrink-0">⚡ SANDBOX</span>
+              <p className="text-[11px] text-[#a8a8a8] font-sans leading-relaxed">
+                You're in sandbox mode. Nodes are simulated — no real SSH connections are made. Sign in to connect real servers.
+              </p>
+            </div>
+          )}
+
+          {/* Simulation toggle — locked in sandbox/guest mode */}
+          <div className={`bg-[#161616] border border-[#393939] p-4 rounded-none flex items-start gap-3 ${forceSimulated ? 'opacity-50 pointer-events-none' : ''}`}>
             <input
               type="checkbox"
               id="isSimulated"
-              checked={isSimulated}
-              onChange={(e) => setIsSimulated(e.target.checked)}
+              checked={forceSimulated || isSimulated}
+              onChange={(e) => !forceSimulated && setIsSimulated(e.target.checked)}
               className="mt-1 h-4 w-4 bg-[#262626] border-[#393939] text-[#0f62fe] focus:ring-0 rounded-none focus:ring-offset-0"
+              disabled={forceSimulated}
             />
             <div className="flex-1">
               <label htmlFor="isSimulated" className="text-xs font-bold text-slate-100 cursor-pointer block select-none uppercase tracking-wider font-mono">
-                Local Simulator Mode (Active by Default)
+                {forceSimulated ? 'Simulated Node (locked in sandbox mode)' : 'Local Simulator Mode (Active by Default)'}
               </label>
               <p className="text-[11px] text-[#8d8d8d] mt-0.5 leading-relaxed font-sans">
                 Generates robust, live simulated docker metrics, resources, and ports. Toggle off to connect utilizing real physical SSH credentials.
               </p>
             </div>
           </div>
+
+          {/* ProxMox toggle — only meaningful for real hosts, hidden in sandbox */}
+          {!isSimulated && !forceSimulated && (
+            <div className="bg-[#161616] border border-[#f1c21b]/30 p-4 rounded-none flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="proxmox"
+                checked={proxmox}
+                onChange={(e) => setProxmox(e.target.checked)}
+                className="mt-1 h-4 w-4 bg-[#262626] border-[#393939] text-[#f1c21b] focus:ring-0 rounded-none focus:ring-offset-0"
+              />
+              <div className="flex-1">
+                <label htmlFor="proxmox" className="text-xs font-bold text-[#f1c21b] cursor-pointer block select-none uppercase tracking-wider font-mono">
+                  ProxMox Host
+                </label>
+                <p className="text-[11px] text-[#8d8d8d] mt-0.5 leading-relaxed font-sans">
+                  Enables the LXC container management tab. Allows listing, starting, stopping LXC containers and managing Docker inside each via <code className="font-mono text-[#78a9ff]">pct exec</code>.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
