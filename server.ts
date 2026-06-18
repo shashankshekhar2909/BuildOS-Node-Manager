@@ -1390,6 +1390,606 @@ Available Hosts: ${JSON.stringify(hostMetadata)}`;
   }
 });
 
+// ── Docker Project Migration ────────────────────────────────────────────────
+
+interface TransferFile { relativePath: string; data: Buffer; }
+
+const TAR_EXCLUDES = ['.git', 'node_modules', '__pycache__', '.next', 'dist', 'build', '.cache', '.terraform', 'vendor', '*.log']
+  .map(d => `--exclude='${d}'`).join(' ');
+
+// Try `docker compose` first; fall back to `sudo docker compose` for non-root users
+async function dockerCompose(host: HostMachine, args: string, cwd?: string): Promise<string> {
+  const cd = cwd ? `cd "${cwd}" && ` : '';
+  return executeRealSSH(host,
+    `${cd}(docker compose ${args} 2>&1) || (sudo docker compose ${args} 2>&1)`
+  );
+}
+
+interface MigJobState {
+  phase: string;
+  progress: number;
+  totalFiles: number;
+  transferredFiles: number;
+  log: string[];
+  error?: string;
+  targetContainers?: Array<{ name: string; status: string; ports: string }>;
+  // stored for rollback
+  _targetHost?: HostMachine;
+  _finalPath?: string;
+  _sourcePath?: string;
+  _sourceHost?: HostMachine;
+}
+
+const migrationJobs = new Map<string, MigJobState>();
+
+function createSftpSession(host: HostMachine): Promise<{ sftp: any; conn: Client }> {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    conn.on('ready', () => {
+      conn.sftp((err: any, sftp: any) => {
+        if (err) { conn.end(); return reject(err); }
+        resolve({ sftp, conn });
+      });
+    }).on('error', reject).connect({
+      host: host.ip,
+      port: host.port || 22,
+      username: host.username,
+      password: host.authType === 'password' ? decrypt(host.password) : undefined,
+      privateKey: host.authType === 'privateKey' ? decrypt(host.privateKey) : undefined,
+      readyTimeout: 15000
+    });
+  });
+}
+
+function sftpReadFile(sftp: any, p: string): Promise<Buffer> {
+  return new Promise((res, rej) => {
+    const chunks: Buffer[] = [];
+    const s = sftp.createReadStream(p);
+    s.on('data', (c: Buffer) => chunks.push(c));
+    s.on('end', () => res(Buffer.concat(chunks)));
+    s.on('error', rej);
+  });
+}
+
+function sftpWriteFile(sftp: any, p: string, data: Buffer): Promise<void> {
+  return new Promise((res, rej) => {
+    const s = sftp.createWriteStream(p);
+    s.on('close', res);
+    s.on('error', rej);
+    s.end(data);
+  });
+}
+
+function sftpMkdir(sftp: any, p: string): Promise<void> {
+  return new Promise(res => sftp.mkdir(p, () => res()));
+}
+
+async function sftpMkdirp(sftp: any, remotePath: string): Promise<void> {
+  const parts = remotePath.split('/').filter(Boolean);
+  let cur = '';
+  for (const part of parts) {
+    cur += '/' + part;
+    await sftpMkdir(sftp, cur);
+  }
+}
+
+function ts(): string {
+  return new Date().toISOString().slice(11, 19); // HH:MM:SS
+}
+
+function tlog(job: MigJobState, msg: string) {
+  job.log.push(`[${ts()}] ${msg}`);
+}
+
+async function patchDockerfilesOnTarget(host: HostMachine, projectPath: string, job: MigJobState): Promise<void> {
+  const pyScript = [
+    'import sys, re',
+    'patched = []',
+    'for path in sys.argv[1:]:',
+    '    try:',
+    '        content = open(path).read()',
+    '        lines = content.split("\\n")',
+    '        for i, line in enumerate(lines):',
+    '            m = re.match(r"^USER\\s+(\\S+)", line.strip())',
+    '            if m:',
+    '                uname = m.group(1)',
+    '                if uname in ("root", "0"): break',
+    '                pre = "\\n".join(lines[:i])',
+    '                if "useradd" not in pre and "adduser" not in pre:',
+    '                    lines[i:i] = [',
+    '                        "RUN (useradd --create-home --shell /bin/bash " + uname + " 2>/dev/null || adduser -S " + uname + " 2>/dev/null) || true",',
+    '                        "RUN chown -R " + uname + " /app 2>/dev/null || true",',
+    '                    ]',
+    '                    open(path, "w").write("\\n".join(lines))',
+    '                    patched.append(path)',
+    '                break',
+    '    except Exception as e: print("skip " + path + ": " + str(e))',
+    'print("Patched: " + ", ".join(patched) if patched else "No Dockerfile patches needed")',
+  ].join('\n');
+
+  const scriptPath = `/tmp/buildos_dfpatch_${Date.now()}.py`;
+  const { sftp, conn } = await createSftpSession(host);
+  await sftpWriteFile(sftp, scriptPath, Buffer.from(pyScript, 'utf-8'));
+  conn.end();
+
+  const out = await executeRealSSH(host,
+    `DFS=$(find "${projectPath}" -name "Dockerfile" -type f 2>/dev/null | tr '\\n' ' '); ` +
+    `[ -n "$DFS" ] && python3 ${scriptPath} $DFS 2>/dev/null || echo "python3 unavailable, skipping Dockerfile patch"; ` +
+    `rm -f ${scriptPath}`
+  ).catch(() => '');
+  if (out.trim()) tlog(job, `Dockerfile check: ${out.trim()}`);
+}
+
+async function transferViaZip(
+  sourceHost: HostMachine,
+  targetHost: HostMachine,
+  sourcePath: string,
+  destPath: string,
+  finalDirName: string,
+  overrideFiles: TransferFile[],
+  job: MigJobState
+): Promise<string> {
+  const tmpId = `buildos_${Date.now()}`;
+  const srcParent = sourcePath.split('/').slice(0, -1).join('/') || '/';
+  const srcFolder = sourcePath.split('/').pop()!;
+  const tarName = `${tmpId}.tar.gz`;
+  const srcTar = `/tmp/${tarName}`;
+  const dstTar = `/tmp/${tarName}`;
+  const finalPath = `${destPath}/${finalDirName}`;
+
+  // 1. Create tar.gz on source (excludes dev/build dirs)
+  const t0 = Date.now();
+  tlog(job, `Archiving ${srcFolder} on source...`);
+  await executeRealSSH(sourceHost,
+    `tar czf "${srcTar}" ${TAR_EXCLUDES} -C "${srcParent}" "${srcFolder}" 2>&1`
+  );
+
+  const sizeOut = await executeRealSSH(sourceHost,
+    `stat -c%s "${srcTar}" 2>/dev/null || wc -c < "${srcTar}"`
+  ).catch(() => '0');
+  const sizeBytes = parseInt(sizeOut.trim().split(/\s/)[0]) || 0;
+  const sizeMB = (sizeBytes / 1024 / 1024).toFixed(1);
+  tlog(job, `Archive ready: ${sizeMB}MB (${((Date.now() - t0) / 1000).toFixed(1)}s) — downloading...`);
+  job.progress = 22;
+
+  // 2. SFTP download single archive
+  const t1 = Date.now();
+  const { sftp: srcSftp, conn: srcConn } = await createSftpSession(sourceHost);
+  const tarBuffer = await sftpReadFile(srcSftp, srcTar);
+  srcConn.end();
+  await executeRealSSH(sourceHost, `rm -f "${srcTar}"`).catch(() => {});
+  tlog(job, `Downloaded ${(tarBuffer.length / 1024 / 1024).toFixed(1)}MB in ${((Date.now() - t1) / 1000).toFixed(1)}s`);
+  job.progress = 55;
+
+  // 3. SFTP upload to target
+  const t2 = Date.now();
+  tlog(job, `Uploading archive to ${targetHost.name}...`);
+  const { sftp: dstSftp, conn: dstConn } = await createSftpSession(targetHost);
+  await sftpMkdirp(dstSftp, destPath);
+  await sftpWriteFile(dstSftp, dstTar, tarBuffer);
+  dstConn.end();
+  tlog(job, `Upload complete in ${((Date.now() - t2) / 1000).toFixed(1)}s — extracting...`);
+  job.progress = 75;
+
+  // 4. Extract on target; rename if projectName differs from source folder name
+  const t3 = Date.now();
+  if (finalDirName !== srcFolder) {
+    await executeRealSSH(targetHost,
+      `cd "${destPath}" && tar xzf "${dstTar}" && mv "${srcFolder}" "${finalDirName}" && rm -f "${dstTar}"`
+    );
+  } else {
+    await executeRealSSH(targetHost,
+      `cd "${destPath}" && tar xzf "${dstTar}" && rm -f "${dstTar}"`
+    );
+  }
+  tlog(job, `Extracted to ${finalPath} in ${((Date.now() - t3) / 1000).toFixed(1)}s`);
+  tlog(job, `Total transfer: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  job.progress = 82;
+
+  // 5. Write port-remap override files after extraction
+  if (overrideFiles.length > 0) {
+    const { sftp: ovSftp, conn: ovConn } = await createSftpSession(targetHost);
+    for (const f of overrideFiles) {
+      await sftpWriteFile(ovSftp, `${finalPath}/${f.relativePath}`, f.data);
+    }
+    ovConn.end();
+    tlog(job, `Written ${overrideFiles.length} override file(s)`);
+  }
+
+  return finalPath;
+}
+
+function parseComposePortsAndVolumes(composeYml: string): {
+  portMappings: Array<{ service: string; hostPort: number; containerPort: number; protocol: string }>;
+  namedVolumes: string[];
+} {
+  const portMappings: Array<{ service: string; hostPort: number; containerPort: number; protocol: string }> = [];
+  const namedVolumes: string[] = [];
+
+  // Named volumes: top-level `volumes:` block keys (0-indent)
+  const topLevelVolumesMatch = composeYml.match(/^volumes:\s*\n((?:[ \t]+\S[^\n]*\n?)*)/m);
+  if (topLevelVolumesMatch) {
+    const block = topLevelVolumesMatch[1];
+    for (const line of block.split('\n')) {
+      const m = line.match(/^[ \t]{2}([\w][\w.-]*)[ \t]*:/);
+      if (m) namedVolumes.push(m[1]);
+    }
+  }
+
+  // Port mappings: parse service blocks
+  let currentService = '';
+  let inPorts = false;
+  let portsIndent = 0;
+  for (const line of composeYml.split('\n')) {
+    const svcMatch = line.match(/^  ([\w][\w.-]*):\s*$/);
+    if (svcMatch) { currentService = svcMatch[1]; inPorts = false; continue; }
+    if (/^ {4}ports:\s*$/.test(line)) { inPorts = true; portsIndent = 6; continue; }
+    if (inPorts) {
+      const portLine = line.match(/^[ \t]{4,8}-\s+['"]?(.+?)['"]?\s*$/);
+      if (portLine) {
+        const raw = portLine[1];
+        // Handle ip:host:container or host:container or just container
+        const parts = raw.replace(/['"/]/g, '').split(':');
+        let hostPort = 0, containerPort = 0, protocol = 'tcp';
+        if (parts.length >= 2) {
+          const last = parts[parts.length - 1];
+          const protoSplit = last.split('/');
+          containerPort = parseInt(protoSplit[0]);
+          protocol = protoSplit[1] || 'tcp';
+          hostPort = parseInt(parts[parts.length - 2]);
+        } else {
+          containerPort = parseInt(parts[0]);
+          hostPort = containerPort;
+        }
+        if (hostPort > 0 && containerPort > 0 && currentService) {
+          portMappings.push({ service: currentService, hostPort, containerPort, protocol });
+        }
+      } else if (!/^\s*$/.test(line) && !/^[ \t]{6,}-/.test(line)) {
+        inPorts = false;
+      }
+    }
+  }
+  return { portMappings, namedVolumes };
+}
+
+// Discover docker-compose projects on a host
+app.post('/api/migration/discover', async (req, res) => {
+  const { host } = req.body as { host: HostMachine };
+  if (!host || host.proxmox) return res.status(400).json({ error: 'Invalid or Proxmox host' });
+  if (host.isSimulated) return res.json({ projects: [] });
+
+  try {
+    // Try docker compose ls (v2) first
+    let projects: any[] = [];
+    const lsResult = await executeRealSSH(host,
+      "(docker compose ls --format json 2>/dev/null || sudo docker compose ls --format json 2>/dev/null) || echo '__FALLBACK__'"
+    );
+    const raw = lsResult.trim();
+    if (!raw.includes('__FALLBACK__') && raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw);
+        projects = parsed.map((p: any) => {
+          const configFile = (p.ConfigFiles || '').split(',')[0].trim();
+          const path = configFile.replace(/\/(docker-compose\.ya?ml)$/, '');
+          return { name: p.Name || 'unknown', path, configFile, status: p.Status || 'unknown' };
+        });
+      } catch {}
+    }
+
+    if (projects.length === 0) {
+      // Fallback: search common locations
+      const findResult = await executeRealSSH(host,
+        "find /opt /home /srv /root /var/www /app -maxdepth 5 -name 'docker-compose.yml' -o -name 'docker-compose.yaml' 2>/dev/null | head -20"
+      );
+      if (findResult.trim()) {
+        projects = findResult.trim().split('\n').filter(Boolean).map(configFile => {
+          const path = configFile.replace(/\/(docker-compose\.ya?ml)$/, '');
+          const name = path.split('/').pop() || 'unknown';
+          return { name, path, configFile, status: 'found' };
+        });
+      }
+    }
+
+    res.json({ projects });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Preflight check: verify target + parse ports/volumes from source compose file
+app.post('/api/migration/preflight', async (req, res) => {
+  const { sourceHost, targetHost, sourcePath, destPath, projectName } = req.body as {
+    sourceHost: HostMachine; targetHost: HostMachine; sourcePath: string; destPath: string; projectName?: string;
+  };
+  if (!sourceHost || !targetHost || !sourcePath) return res.status(400).json({ error: 'Missing required fields' });
+  if (sourceHost.proxmox || targetHost.proxmox) return res.status(400).json({ error: 'Proxmox hosts not supported' });
+
+  const result: any = {
+    targetReachable: false,
+    targetDockerVersion: null,
+    targetComposeVersion: null,
+    targetDiskFreeGB: null,
+    destPathExists: false,
+    portMappings: [],
+    namedVolumes: [],
+  };
+
+  // 1. Target reachability + docker
+  try {
+    const dv = await executeRealSSH(targetHost, 'docker --version 2>&1');
+    result.targetReachable = true;
+    result.targetDockerVersion = dv.trim().split('\n')[0];
+  } catch (e: any) {
+    result.error = `Cannot reach target: ${e.message}`;
+    return res.json(result);
+  }
+
+  try {
+    const cv = await executeRealSSH(targetHost, 'docker compose version 2>/dev/null || docker-compose --version 2>/dev/null');
+    result.targetComposeVersion = cv.trim().split('\n')[0];
+  } catch {}
+
+  // 2. Disk space on target
+  try {
+    const df = await executeRealSSH(targetHost, "df -BG / --output=avail 2>/dev/null | tail -1 || df -g / 2>/dev/null | tail -1 | awk '{print $4}'");
+    result.targetDiskFreeGB = parseInt(df.replace(/[^0-9]/g, '')) || null;
+  } catch {}
+
+  // 3. Check if final project path already exists on target
+  try {
+    const finalDirName = projectName || sourcePath.split('/').pop() || 'migrated-project';
+    const finalPath = `${destPath}/${finalDirName}`;
+    const chk = await executeRealSSH(targetHost, `test -d "${finalPath}" && echo exists || echo notfound`);
+    result.destPathExists = chk.trim() === 'exists';
+  } catch {}
+
+  // 4. In-use ports on target
+  const targetUsedPorts = new Set<number>();
+  try {
+    const portsOut = await executeRealSSH(targetHost,
+      "ss -tlnp 2>/dev/null | awk 'NR>1{print $4}' | grep -oE '[0-9]+$' | sort -un"
+    );
+    portsOut.split('\n').forEach(p => { const n = parseInt(p.trim()); if (n > 0) targetUsedPorts.add(n); });
+  } catch {}
+
+  // 5. Parse compose file from source
+  try {
+    const { sftp, conn } = await createSftpSession(sourceHost);
+    let composeContent: string | null = null;
+    for (const fname of ['docker-compose.yml', 'docker-compose.yaml']) {
+      try {
+        const buf = await sftpReadFile(sftp, `${sourcePath}/${fname}`);
+        composeContent = buf.toString('utf-8');
+        break;
+      } catch {}
+    }
+    conn.end();
+
+    if (composeContent) {
+      const { portMappings, namedVolumes } = parseComposePortsAndVolumes(composeContent);
+      result.namedVolumes = namedVolumes;
+      result.portMappings = portMappings.map(pm => ({
+        ...pm,
+        conflictOnTarget: targetUsedPorts.has(pm.hostPort),
+        newHostPort: pm.hostPort,
+      }));
+    }
+  } catch {}
+
+  res.json(result);
+});
+
+// Start migration job (async — poll /api/migration/job/:jobId)
+app.post('/api/migration/start', async (req, res) => {
+  const { sourceHost, targetHost, sourcePath, destPath, projectName, portOverrides } = req.body as {
+    sourceHost: HostMachine; targetHost: HostMachine;
+    sourcePath: string; destPath: string;
+    projectName: string;
+    portOverrides: Array<{ service: string; hostPort: number; containerPort: number; newHostPort: number }>;
+  };
+
+  if (!sourceHost || !targetHost || !sourcePath || !destPath) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (sourceHost.proxmox || targetHost.proxmox) {
+    return res.status(400).json({ error: 'Proxmox hosts not supported' });
+  }
+
+  const jobId = `mig-${Date.now()}`;
+  const job: MigJobState = {
+    phase: 'transferring', progress: 0,
+    totalFiles: 0, transferredFiles: 0,
+    log: ['Migration job created'],
+    targetContainers: [],
+    _targetHost: targetHost,
+    _sourceHost: sourceHost,
+    _sourcePath: sourcePath,
+  };
+  migrationJobs.set(jobId, job);
+
+  const finalDirName = projectName || sourcePath.split('/').pop() || 'migrated-project';
+  const finalPath = `${destPath}/${finalDirName}`;
+
+  // Run async — do not await
+  (async () => {
+    // Track rollback state
+    let extractedPath: string | null = null;
+    let composeStarted = false;
+
+    const rollbackTarget = async (reason: string) => {
+      tlog(job, `--- ROLLBACK: ${reason} ---`);
+      if (composeStarted && extractedPath) {
+        tlog(job, 'Stopping containers on target...');
+        await dockerCompose(targetHost, 'down', extractedPath).catch(() => {});
+      }
+      if (extractedPath) {
+        tlog(job, `Removing ${extractedPath} from target...`);
+        await executeRealSSH(targetHost, `rm -rf "${extractedPath}" 2>/dev/null || true`).catch(() => {});
+        extractedPath = null;
+        tlog(job, 'Target clean. Source still running — nothing lost.');
+      }
+    };
+
+    try {
+      // ── Phase 1: Build override files ──────────────────────────────────────
+      const overrideFiles: TransferFile[] = [];
+      const remapped = (portOverrides || []).filter(po => po.newHostPort !== po.hostPort);
+      if (remapped.length > 0) {
+        const svcMap: Record<string, string[]> = {};
+        remapped.forEach(po => {
+          if (!svcMap[po.service]) svcMap[po.service] = [];
+          svcMap[po.service].push(`"${po.newHostPort}:${po.containerPort}"`);
+        });
+        let overrideYml = 'services:\n';
+        for (const [svc, ports] of Object.entries(svcMap)) {
+          overrideYml += `  ${svc}:\n    ports:\n`;
+          ports.forEach(p => { overrideYml += `      - ${p}\n`; });
+        }
+        overrideFiles.push({ relativePath: 'docker-compose.override.yml', data: Buffer.from(overrideYml, 'utf-8') });
+        tlog(job, `Port override prepared (${remapped.length} remapped services)`);
+      }
+
+      // ── Phase 2: Tar → transfer → extract ─────────────────────────────────
+      job.phase = 'transferring';
+      tlog(job, `Source: ${sourceHost.name} [${sourceHost.ip}] ${sourcePath}`);
+      tlog(job, `Target: ${targetHost.name} [${targetHost.ip}] → ${destPath}/${finalDirName}`);
+      const resolvedFinalPath = await transferViaZip(
+        sourceHost, targetHost, sourcePath, destPath, finalDirName, overrideFiles, job
+      );
+      extractedPath = resolvedFinalPath;
+      job._finalPath = resolvedFinalPath;
+      tlog(job, `Files live at: ${targetHost.username}@${targetHost.ip}:${resolvedFinalPath}`);
+      tlog(job, 'Transfer complete');
+
+      // ── Phase 2.5: Patch Dockerfiles missing USER definitions ─────────────
+      tlog(job, 'Scanning Dockerfiles for USER compatibility...');
+      await patchDockerfilesOnTarget(targetHost, resolvedFinalPath, job);
+
+      // ── Phase 3: docker compose up on target ───────────────────────────────
+      job.phase = 'starting';
+      tlog(job, 'Pulling images on target...');
+      try {
+        await dockerCompose(targetHost, 'pull 2>&1 | tail -5', resolvedFinalPath);
+        tlog(job, 'Images ready');
+      } catch (e: any) {
+        tlog(job, `Pull note: ${e.message.split('\n')[0]} (continuing)`);
+      }
+
+      const t4 = Date.now();
+      tlog(job, 'Running docker compose up -d...');
+      await dockerCompose(targetHost, 'up -d', resolvedFinalPath);
+      composeStarted = true;
+      tlog(job, `Compose up in ${((Date.now() - t4) / 1000).toFixed(1)}s`);
+      job.progress = 90;
+
+      // ── Phase 4: Verify — wait up to 90s for all containers healthy ────────
+      job.phase = 'verifying';
+      tlog(job, 'Waiting for containers to be healthy...');
+      let allUp = false;
+      for (let attempt = 0; attempt < 18; attempt++) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          const psOut = await dockerCompose(targetHost,
+            `ps --format '{{.Name}}|{{.Status}}|{{.Ports}}'`, resolvedFinalPath
+          );
+          const containers = psOut.trim().split('\n').filter(Boolean).map(line => {
+            const [name, status, ports] = line.split('|');
+            return { name: (name || '').trim(), status: (status || '').trim(), ports: (ports || '').trim() };
+          }).filter(c => c.name);
+          job.targetContainers = containers;
+          allUp = containers.length > 0 &&
+            containers.every(c => c.status.toLowerCase().includes('up') || c.status.toLowerCase().includes('running'));
+          if (allUp) break;
+        } catch {}
+      }
+
+      if (!allUp) {
+        // Containers didn't come up — rollback target, source still safe
+        await rollbackTarget('containers not healthy after 90s');
+        throw new Error('Containers failed to start on target within 90s. Target cleaned up. Source still running.');
+      }
+
+      tlog(job, `${job.targetContainers?.length || 0} containers healthy on target`);
+      job.progress = 100;
+      job.phase = 'waiting_confirm';
+      tlog(job, 'Source still running. Confirm stop to complete migration.');
+
+    } catch (e: any) {
+      // Only rollback if we haven't already rolled back inside the catch
+      if (extractedPath) {
+        await rollbackTarget(e.message);
+      }
+      job.phase = 'error';
+      job.error = e.message;
+      job.log.push(`ERROR: ${e.message}`);
+    }
+  })();
+
+  res.json({ jobId, finalPath });
+});
+
+// Poll migration job status
+app.get('/api/migration/job/:jobId', (req, res) => {
+  const job = migrationJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
+
+// Manual rollback — stop target containers + rm extracted folder (source stays running)
+app.post('/api/migration/rollback/:jobId', async (req, res) => {
+  const job = migrationJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  const targetHost = job._targetHost;
+  const finalPath = job._finalPath;
+  if (!targetHost || !finalPath) return res.status(400).json({ error: 'No rollback target recorded' });
+
+  job.phase = 'error';
+  job.log.push('--- MANUAL ROLLBACK ---');
+  try {
+    await dockerCompose(targetHost, 'down', finalPath).catch(() => {});
+    job.log.push('Containers stopped on target');
+    await executeRealSSH(targetHost, `rm -rf "${finalPath}"`);
+    job.log.push(`Removed ${finalPath} from target`);
+    job._finalPath = undefined;
+    job.error = 'Rolled back by user. Source is still running.';
+    res.json({ success: true });
+  } catch (e: any) {
+    job.log.push(`Rollback error: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Stop source containers (called after user confirms target is healthy)
+app.post('/api/migration/stop-source', async (req, res) => {
+  const { sourceHost, sourcePath, jobId } = req.body as {
+    sourceHost: HostMachine; sourcePath: string; jobId?: string;
+  };
+  if (!sourceHost || !sourcePath) return res.status(400).json({ error: 'Missing sourceHost or sourcePath' });
+  if (sourceHost.proxmox) return res.status(400).json({ error: 'Proxmox not supported' });
+
+  const job = jobId ? migrationJobs.get(jobId) : undefined;
+  if (job) { job.phase = 'stopping_source'; job.log.push('Stopping source containers...'); }
+
+  try {
+    const cmd = [
+      `cd "${sourcePath}"`,
+      `(docker compose down --remove-orphans --timeout 30 2>&1`,
+      `|| sudo docker compose down --remove-orphans --timeout 30 2>&1`,
+      `|| docker-compose down --remove-orphans --timeout 30 2>&1`,
+      `|| true)`,
+    ].join(' ');
+    const out = await executeRealSSH(sourceHost, cmd);
+    if (job) { job.phase = 'done'; job.log.push('Source stopped. Migration complete.'); }
+    res.json({ success: true, output: out });
+  } catch (e: any) {
+    const msg = e.message || String(e);
+    if (job) job.log.push(`Stop source error: ${msg}`);
+    // SSH connect/auth failure — surface full message
+    res.status(500).json({ error: msg });
+  }
+});
+
 // Configure Vite or Static production assets
 async function startServer() {
   const server = http.createServer(app);

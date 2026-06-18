@@ -28,11 +28,11 @@ export default function SSHConsole({ host, onLogged, currentUserRole }: SSHConso
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Clear terminal history when selected host changes
+    // Clear terminal history when selected host ID changes (not on object ref change)
     setHistory([]);
     setDiagnosticReport(null);
     setAnalysisError(null);
-  }, [host]);
+  }, [host?.id]);
 
   useEffect(() => {
     // Scroll to bottom on updates

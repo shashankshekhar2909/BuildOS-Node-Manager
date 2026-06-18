@@ -10,6 +10,7 @@ BuildOS Node Commander is a highly professional, full-stack administration dashb
 *   **📊 D3 Performance Visualizers**: Live real-time area charts tracking CPU, Memory, and Disk utilization stats on interactive server loops.
 *   **🎙️ Speak-to-Command Voice Engine**: Translates live microphone recordings or natural language input into safe, production-grade bash directives using Gemini-3.5-Flash.
 *   **🐳 Docker & Systemd Governor**: Automatic container/service detection with instant Admin state commands (Start, Stop, Restart).
+*   **📦 Live Docker Project Migration**: Move a running docker-compose stack from one SSH node to another — zero-downtime, transactional, with automatic rollback. Single tar.gz transfer, port-conflict remapping, named-volume warnings, Dockerfile user-compatibility patches, and a DNS summary card on completion. Source is never stopped until you explicitly confirm.
 *   **🔒 Multi-User Secure Firebase SSO**: Complete authentication gateway dividing operator scopes cleanly between Admin and Read-Only Views.
 *   **🐳 Simulated Laboratory Nodes**: Test administrative commands safely in standard sandboxed clusters inside the app.
 
@@ -38,6 +39,7 @@ BuildOS Node Commander is a highly professional, full-stack administration dashb
     *   `LLMConfigPanel.tsx`: Remote execution parameters.
     *   `AddHostModal.tsx`: Server initialization drawer.
     *   `UserManagementPanel.tsx`: Admin-level permissions coordinator.
+    *   `MigrateProjectModal.tsx`: 7-step Docker project live migration wizard (discover → configure → preflight → volumes_warn → migrating → confirm_stop → done).
 *   `docs/` : System architectural plans, completed milestones, technical diagrams, and prospective roadmap files.
 
 ---

@@ -350,7 +350,7 @@ export default function NodeDetailsPage({
             </div>
           </div>
 
-          <NodeMonitor key={host.id} host={host} currentUserRole={currentUserRole} />
+          <NodeMonitor key={host.id} host={host} allHosts={hosts} currentUserRole={currentUserRole} />
         </div>
       </div>
     </div>

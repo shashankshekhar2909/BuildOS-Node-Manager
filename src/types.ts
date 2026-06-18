@@ -72,3 +72,51 @@ export interface AgentAction {
   output?: string;
   status: 'pending' | 'success' | 'failed';
 }
+
+// ── Docker Project Migration ────────────────────────────────────────────────
+
+export interface DockerProject {
+  name: string;
+  path: string;
+  configFile: string;
+  status: string;
+}
+
+export interface PortMapping {
+  service: string;
+  hostPort: number;
+  containerPort: number;
+  protocol: string;
+  conflictOnTarget: boolean;
+  newHostPort: number;
+}
+
+export interface MigrationPreflightResult {
+  targetReachable: boolean;
+  targetDockerVersion: string | null;
+  targetComposeVersion: string | null;
+  targetDiskFreeGB: number | null;
+  destPathExists: boolean;
+  portMappings: PortMapping[];
+  namedVolumes: string[];
+  error?: string;
+}
+
+export type MigrationPhase =
+  | 'transferring'
+  | 'starting'
+  | 'verifying'
+  | 'waiting_confirm'
+  | 'stopping_source'
+  | 'done'
+  | 'error';
+
+export interface MigJobState {
+  phase: MigrationPhase;
+  progress: number;
+  totalFiles: number;
+  transferredFiles: number;
+  log: string[];
+  error?: string;
+  targetContainers?: Array<{ name: string; status: string; ports: string }>;
+}

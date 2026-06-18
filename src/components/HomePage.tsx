@@ -17,6 +17,7 @@ import {
   Shield,
   Infinity,
   Container,
+  ArrowRightLeft,
 } from 'lucide-react';
 
 interface HomePageProps {
@@ -82,13 +83,20 @@ const features = [
     detail: 'SSH passwords and private keys encrypted with AES-256-CBC before Firestore write. DEMO_MODE env var forces all SSH to simulation server-side regardless of client payload.',
     color: '#78a9ff', bg: 'rgba(120,169,255,0.10)', border: 'rgba(120,169,255,0.28)', glow: 'rgba(120,169,255,0.18)', iconBg: 'rgba(120,169,255,0.15)',
   },
+  {
+    icon: ArrowRightLeft,
+    title: 'Live Project Migration',
+    description: 'Relocate a live docker-compose project to a different server in minutes — source keeps running until you verify the target is healthy and explicitly confirm the cutover.',
+    detail: '7-step wizard: discover projects → configure target → preflight checks → volumes warning → tar.gz transfer → verify containers → confirm stop. Port conflicts remapped. Dockerfiles auto-patched for missing USER definitions. Full rollback on any failure.',
+    color: '#ff7eb6', bg: 'rgba(255,126,182,0.10)', border: 'rgba(255,126,182,0.28)', glow: 'rgba(255,126,182,0.18)', iconBg: 'rgba(255,126,182,0.15)',
+  },
 ];
 
 /* ── Tech stack marquee ── */
 const techStack = [
   'React 18', 'TypeScript', 'Vite', 'Tailwind CSS', 'Express.js',
   'Firebase Auth', 'Firestore', 'ssh2', 'Gemini 2.0 Flash', 'Groq',
-  'AES-256-CBC', 'motion/react', 'Recharts', 'Docker API', 'pct exec',
+  'AES-256-CBC', 'motion/react', 'Recharts', 'Docker API', 'pct exec', 'tar.gz migrate',
 ];
 
 /* ── Hero terminal lines ── */
@@ -155,11 +163,10 @@ export default function HomePage({ onSignIn, onSandbox }: HomePageProps) {
       `}</style>
 
       {/* Dot-grid background */}
-      <div className="fixed inset-0 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.11) 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
-      <div className="fixed inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 80% 60% at 50% 0%, transparent 40%, #161616 100%)' }} />
+      <div className="fixed inset-0 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.09) 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
 
       {/* ── Nav ── */}
-      <header className="sticky top-0 z-50 bg-[#161616]/90 backdrop-blur-md border-b border-[#393939] h-14 px-5 flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-[#161616] border-b border-[#393939] h-14 px-5 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="p-1.5 text-white shrink-0" style={{ background: 'linear-gradient(135deg, #6366f1, #0f62fe)' }}>
             <Bot className="h-4 w-4" />
@@ -259,7 +266,7 @@ export default function HomePage({ onSignIn, onSandbox }: HomePageProps) {
         <motion.div initial={{ opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} className="text-center mb-14">
           <p className="font-mono text-[10px] text-[#6366f1] uppercase tracking-widest mb-3">What's inside</p>
           <h2 className="text-2xl sm:text-3xl font-bold text-white mb-3">Everything you need to run a fleet</h2>
-          <p className="text-[#6f6f6f] text-sm max-w-xl mx-auto">Eight battle-tested modules, unified in a single self-hosted dashboard. Hover any card for implementation details.</p>
+          <p className="text-[#6f6f6f] text-sm max-w-xl mx-auto">Nine battle-tested modules, unified in a single self-hosted dashboard. Hover any card for implementation details.</p>
         </motion.div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -483,6 +490,61 @@ export default function HomePage({ onSignIn, onSandbox }: HomePageProps) {
                         <span className="ml-auto text-[#42be65] shrink-0">{d.status}</span>
                       </div>
                     ))}
+                  </motion.div>
+                ))}
+              </div>
+            </TerminalCard>
+          </div>
+        </motion.div>
+
+        {/* Spotlight D — Live Project Migration */}
+        <motion.div initial={{ opacity: 0, y: 24 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ duration: 0.5 }} className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+          {/* Text */}
+          <div className="order-2 lg:order-1">
+            <div className="inline-flex items-center gap-2 px-3 py-1 mb-5 font-mono text-[10px] uppercase tracking-wider" style={{ background: 'rgba(255,126,182,0.10)', border: '1px solid rgba(255,126,182,0.30)', color: '#ff7eb6' }}>
+              <ArrowRightLeft className="h-3 w-3" /> Live Migration · SSH Transfer
+            </div>
+            <h3 className="text-xl sm:text-2xl font-bold text-white mb-4 leading-snug">Move a live stack to a new server — source never stops until you say so.</h3>
+            <p className="text-[#8d8d8d] text-sm leading-relaxed mb-6">
+              No Docker Hub. No shared volumes. No inter-node SSH keys. BuildOS acts as the relay — it pulls a tar.gz from the source over SFTP, re-uploads it to the target, extracts, starts the stack, waits for all containers to pass health checks, then asks you to confirm before touching the source.
+            </p>
+            <ul className="space-y-3">
+              {[
+                { label: 'Single tar.gz transfer', detail: 'One archive: pack on source → download to BuildOS → upload to target → extract. Faster than file-by-file SFTP.' },
+                { label: 'Port conflict remapping', detail: 'Preflight runs ss -tlnp on target. Any conflict shows in an editable table — change the host port before migration starts.' },
+                { label: 'Transactional rollback', detail: 'If anything fails after extraction — bad health check, compose error — target is cleaned and source stays running. Nothing is lost.' },
+                { label: 'Dockerfile user-patch', detail: 'Scans every Dockerfile in the project. If USER <name> exists without a matching useradd/adduser, injects the creation lines automatically before docker compose up.' },
+                { label: 'DNS handover card', detail: 'On completion: target IP, all services with their new ports, copy buttons, downloadable .txt summary. Update DNS from one screen.' },
+              ].map(b => (
+                <li key={b.label} className="flex gap-3">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full shrink-0" style={{ background: '#ff7eb6' }} />
+                  <div>
+                    <span className="text-[13px] font-semibold text-white font-mono">{b.label}</span>
+                    <span className="text-[11px] text-[#6f6f6f] ml-2">{b.detail}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+          {/* Mockup — migration log */}
+          <div className="order-1 lg:order-2">
+            <TerminalCard label="buildos · migrate · agentic-hms → prod-server" accentColor="#ff7eb6">
+              <div className="p-5 font-mono text-[11px] space-y-1.5">
+                {[
+                  { t: '[09:14:22] Preflight passed — disk 42GB free', c: '#6f6f6f' },
+                  { t: '[09:14:23] Port 3000 conflict → remapped to 3001', c: '#f1c21b' },
+                  { t: '[09:14:24] Archiving source... (tar.gz)', c: '#8d8d8d' },
+                  { t: '[09:14:31] Archive: 84MB in 7.2s', c: '#8d8d8d' },
+                  { t: '[09:14:39] Upload to prod-server complete (8.1s)', c: '#8d8d8d' },
+                  { t: '[09:14:41] Extracted → /opt/agentic-hms', c: '#78a9ff' },
+                  { t: '[09:14:41] Files live at: deploy@10.0.0.5:/opt/agentic-hms', c: '#78a9ff' },
+                  { t: '[09:14:42] Dockerfile check: Patched backend/Dockerfile', c: '#f1c21b' },
+                  { t: '[09:14:48] docker compose up -d (6.2s)', c: '#8d8d8d' },
+                  { t: '[09:14:55] ✓ 3/3 containers healthy', c: '#42be65' },
+                  { t: '[09:14:55] Source still running — awaiting confirm', c: '#ff7eb6' },
+                ].map((line, i) => (
+                  <motion.div key={i} initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }} transition={{ delay: i * 0.08 }} style={{ color: line.c }}>
+                    {line.t}
                   </motion.div>
                 ))}
               </div>

@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import {
   Activity, Play, Square, RotateCw, Layers, Shield,
   Cpu, HardDrive, RefreshCw, AlertCircle, CheckCircle2, XCircle, Clock,
-  Box, ChevronDown, ChevronRight, Container
+  Box, ChevronDown, ChevronRight, Container, GitMerge
 } from 'lucide-react';
 import { HostMachine } from '../types';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import MigrateProjectModal from './MigrateProjectModal';
 
 interface NodeMonitorProps {
   host: HostMachine | null;
+  allHosts?: HostMachine[];
   currentUserRole?: 'admin' | 'viewer' | null;
 }
 
@@ -47,7 +49,7 @@ interface LxcDockerContainer {
   ports: string;
 }
 
-export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps) {
+export default function NodeMonitor({ host, allHosts = [], currentUserRole }: NodeMonitorProps) {
   const [data, setData] = useState<{
     cpu: number;
     ram: { used: number; total: number; percent: number };
@@ -62,6 +64,7 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<'status' | 'docker' | 'services' | 'lxc'>('status');
+  const [showMigrateModal, setShowMigrateModal] = useState(false);
 
   // ProxMox LXC state
   const [lxcList, setLxcList] = useState<LxcContainer[] | null>(null);
@@ -493,7 +496,14 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
           <div className="space-y-4">
             <div className="flex items-center justify-between font-mono text-[10px] text-[#8d8d8d] border-b border-[#393939] pb-2 mb-2 uppercase">
               <span>Discovered Docker Containers running in namespace</span>
-              <span>Operator controls active</span>
+              {host && !host.proxmox && !isReadOnly && (
+                <button
+                  onClick={() => setShowMigrateModal(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-[#0f62fe]/10 hover:bg-[#0f62fe] border border-[#0f62fe]/40 hover:border-[#0f62fe] text-[#78a9ff] hover:text-white text-[9px] font-mono font-bold uppercase transition cursor-pointer"
+                >
+                  <GitMerge className="h-3 w-3" /> Migrate Project
+                </button>
+              )}
             </div>
 
             {data?.docker && data.docker.length > 0 ? (
@@ -644,6 +654,15 @@ export default function NodeMonitor({ host, currentUserRole }: NodeMonitorProps)
               </div>
             )}
           </div>
+        )}
+
+        {/* Migrate modal */}
+        {showMigrateModal && host && (
+          <MigrateProjectModal
+            sourceHost={host}
+            allHosts={allHosts}
+            onClose={() => setShowMigrateModal(false)}
+          />
         )}
 
         {/* 4. ProxMox LXC management panel */}
