@@ -14,20 +14,42 @@ import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 dotenv.config();
 
 // Initialize Firebase Web SDK on the server side
-const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
 let firestoreDb: any = null;
 
-if (fs.existsSync(firebaseConfigPath)) {
+const fbApiKey     = process.env.FIREBASE_API_KEY;
+const fbProjectId  = process.env.FIREBASE_PROJECT_ID;
+const fbAppId      = process.env.FIREBASE_APP_ID;
+const fbAuthDomain = process.env.FIREBASE_AUTH_DOMAIN;
+const fbDbId       = process.env.FIREBASE_DATABASE_ID;
+const fbBucket     = process.env.FIREBASE_STORAGE_BUCKET;
+const fbSenderId   = process.env.FIREBASE_MESSAGING_SENDER_ID;
+
+// Fallback: load from firebase-applet-config.json if env vars not set
+const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+const fileConfig = fs.existsSync(firebaseConfigPath)
+  ? JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"))
+  : null;
+
+const firebaseConfig = {
+  apiKey:            fbApiKey     || fileConfig?.apiKey,
+  projectId:         fbProjectId  || fileConfig?.projectId,
+  appId:             fbAppId      || fileConfig?.appId,
+  authDomain:        fbAuthDomain || fileConfig?.authDomain,
+  storageBucket:     fbBucket     || fileConfig?.storageBucket,
+  messagingSenderId: fbSenderId   || fileConfig?.messagingSenderId,
+};
+const firestoreDatabaseId = fbDbId || fileConfig?.firestoreDatabaseId;
+
+if (firebaseConfig.projectId && firebaseConfig.apiKey) {
   try {
-    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
     const fbApp = initializeApp(firebaseConfig);
-    firestoreDb = getFirestore(fbApp, firebaseConfig.firestoreDatabaseId);
-    console.log("[Firebase Server] Firestore successfully connected to custom database ID:", firebaseConfig.firestoreDatabaseId);
+    firestoreDb = getFirestore(fbApp, firestoreDatabaseId);
+    console.log("[Firebase Server] Firestore connected:", firestoreDatabaseId || '(default)');
   } catch (err) {
     console.error("[Firebase Server] Connection failed:", err);
   }
 } else {
-  console.warn("[Firebase Server] firebase-applet-config.json not found in server working directory");
+  console.warn("[Firebase Server] Firebase config missing — set FIREBASE_* env vars or provide firebase-applet-config.json");
 }
 
 // Secure AES-256-CBC Encryption Engine

@@ -760,6 +760,14 @@ export default function App() {
                 </button>
               </>
             )}
+            <div className="pt-2 text-center">
+              <button
+                onClick={() => navigate('/')}
+                className="text-[10px] font-mono text-[#525252] hover:text-[#6366f1] transition-colors cursor-pointer underline underline-offset-2"
+              >
+                Learn about BuildOS →
+              </button>
+            </div>
           </div>
         </div>
 
