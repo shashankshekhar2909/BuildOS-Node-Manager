@@ -10,3 +10,4 @@ coverage/
 # Runtime data — contains encrypted credentials and API keys, never commit
 data/
 !data/.gitkeep
+assets/.aistudio/
