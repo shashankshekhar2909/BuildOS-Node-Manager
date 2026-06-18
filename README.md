@@ -46,7 +46,34 @@ BuildOS Node Commander is a highly professional, full-stack administration dashb
 
 ## 🚀 Setting Up the Application
 
-### 1. Configure the Environment
+### 1. Configure Firebase
+The app requires a Firebase project for auth (Google SSO) and Firestore (host/config storage).
+
+1. Create a project at [console.firebase.google.com](https://console.firebase.google.com)
+2. Enable **Authentication** → Google sign-in provider
+3. Enable **Firestore Database** — note the database ID (default is `(default)`)
+4. Go to Project Settings → Your apps → Web app → copy the config
+5. Copy the example config and fill in your values:
+
+```bash
+cp firebase-applet-config.example.json firebase-applet-config.json
+```
+
+```json
+{
+  "projectId": "your-firebase-project-id",
+  "appId": "1:000000000000:web:your-app-id",
+  "apiKey": "AIzaSy-your-firebase-web-api-key",
+  "authDomain": "your-firebase-project-id.firebaseapp.com",
+  "firestoreDatabaseId": "your-firestore-database-id",
+  "storageBucket": "your-firebase-project-id.firebasestorage.app",
+  "messagingSenderId": "000000000000"
+}
+```
+
+> **Security:** `firebase-applet-config.json` is gitignored. Never commit it. The Web API key is safe for client-side use only if Firestore rules and Auth are properly configured.
+
+### 2. Configure the Environment
 Copy `.env.example` to `.env` and fill out necessary key configuration lines:
 ```env
 # Google Gemini Processing Key
@@ -56,7 +83,7 @@ GEMINI_API_KEY=your-gemini-api-key
 NODE_ENV=production
 ```
 
-### 2. Run Locally in Development
+### 4. Run Locally in Development
 To load hot-reloading development servers:
 ```bash
 # Install NPM modules
@@ -66,7 +93,7 @@ npm install
 npm run dev
 ```
 
-### 3. Production Compilation & Launch
+### 5. Production Compilation & Launch
 To compile standard static packages and bundle backend modules into a single self-contained executable file:
 ```bash
 # Build system components
